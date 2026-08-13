@@ -1,0 +1,151 @@
+# MOK Subnet — Stage 2: Verified Decentralized Pretraining of MoK-54B
+
+Codebase for a Bittensor subnet in which miners on identical **8× NVIDIA B300
+(SM103) NVLink nodes** collaboratively pretrain a **54B-parameter / 5.5B-active
+MoE** with Cursor's [Mixture-of-Kittens](https://github.com/cursor/mixture-of-kittens)
+megakernel — and in which training work is **verified by bitwise replay**:
+every window a miner claims is a pure function of consensus inputs, and audit
+validators re-execute sampled windows and demand hash-identical weights.
+
+The operational design is specified in `/workspace/stage2-training-playbook.md`;
+each playbook step maps to one top-level directory:
+
+| Dir | Playbook step | What it contains |
+|---|---|---|
+| `A/` | Data preparation | tokenizer training, corpus download/dedup/tokenize/pack, content-addressed 512 MB shards, Merkle manifest, R2 upload. CPU-only — runnable anywhere. |
+| `B/` | Fleet bring-up | hardware attestation (timed deterministic MoK challenge), model seed-init publication, miner onboarding CLI, calibration sweeps, the blessed container. |
+| `C/` | Bulk pretraining | **the subnet application**: `core/` (window protocol engine — SparseLoCo compression, deterministic replicated outer step, scoring, replay audit), `miner/`, `validator/`, `auditor/` role apps. |
+| `D/` | Quality anneal | manifest phase layer over `C` (premium data + LR decay → 0 across 400B tokens). |
+| `E/` | Context extension | manifest phase layer over `C` (seq 16,384, RoPE θ=5e5). |
+| `F/` | SFT | TRL-based supervised fine-tuning; DCP → HF conversion + custom `MokMoe` modeling files. |
+| `G/` | DPO + RLVR | TRL DPO and GRPO with vLLM rollouts and execution-checked math/code rewards. |
+| `H/` | Eval + release | lm-eval harness, provenance bundle (manifest + per-window state roots + signed audit log + replay script), HF upload. |
+| `mok_core/` | — | shared library: config schemas + on-chain manifest, determinism primitives (state roots), MoK model stack, deterministic data pipeline, chain (bittensor SDK) and storage (R2) clients, telemetry. |
+
+## Install
+
+```bash
+# CPU-side development (steps A + all pure-logic tests):
+pip install -e ".[data,dev]"
+
+# On an 8×B300 node (SM103 only — the MoK kernel refuses anything else):
+pip install -e ".[gpu,dev]" --no-build-isolation
+```
+
+## Tests
+
+```bash
+pytest                      # CPU suite: pure logic, mocked chain/storage — runs anywhere
+torchrun --standalone --nproc-per-node=8 -m pytest -m gpu tests/gpu   # on a Tier-A node
+```
+
+Golden-vector tests (PRF outputs, canonical hashes, payload bytes, state roots)
+pin **consensus constants**. Changing any of them is a deliberate protocol
+change: bump `mok_core.SPEC_VERSION`.
+
+## Determinism, in one paragraph
+
+Every window: fresh AdamW (moments reset), data fixed by
+`PRF(run_seed, uid, window)` over Merkle-verified shards, closed-form WSD LR,
+deterministic attention backward, fixed-order flat gradient all-reduce, MoK's
+deterministic megakernel for the MoE layer, and a deterministic outer step
+applied by every node over the leader-certified peer set. The blake2b
+`state_root` of the master weights is committed on-chain each window; auditors
+replay sampled windows on identical hardware and slash on hash mismatch
+(2-of-3 quorum). See `C/core/replay.py`.
+
+## Provenance
+
+The window-protocol family (local-step training with compressed pseudo-gradient
+exchange over object storage) is proven at 72B scale in production
+decentralized runs. The layers that define this subnet — bitwise replay audits,
+hardware attestation, window certificates, Merkle data manifests, and the MoK
+model stack — are original to this project, Apache-2.0.
+
+## Known risks tracked for calibration (step B)
+
+1. Adam-reset-per-window vs training dynamics — A/B during calibration; fallback: reset every K=5 windows (audits then replay ≤5).
+2. torch.compile determinism at 54B — max-autotune banned, inductor cache baked into the container; verified at GPU milestone 1.
+3. Certificate liveness — leader validator with deputy fallback by stake order.
+4. Outer optimizer variant (Nesterov 0.9/0.7 vs plain SGD with error feedback) — calibration pins.
+5. Scoring validators need ≥141 GB GPUs (B200/H200 minimum) for the 54B reference forward.
+
+## Testing
+
+### CPU suite (runs anywhere)
+
+```bash
+.venv/bin/python -m pytest -q          # default: -m 'not gpu and not network'
+```
+
+Pure logic with mocked chain/storage (moto S3, MagicMock subtensor): Merkle +
+PRF + payload/state-root golden vectors (consensus constants — changing one is
+a `SPEC_VERSION` bump), compression round-trips, deterministic outer-step
+lockstep, full loopback windows on the reference backend, replay fraud
+detection, phase/LR closed forms including the D/E boundaries and the
+release-fork procedure (`tests/unit/test_release_fork.py`), F/G/H post-training
+and provenance logic. GPU tests are *collected* (and must import cleanly) but
+deselected; verify collection on any CPU host with:
+
+```bash
+.venv/bin/python -m pytest tests/gpu --collect-only -m gpu -q
+```
+
+### GPU suite (Tier-A node: 8× B300 SM103, NVLink)
+
+All files run under one `torchrun` job; each is also individually invocable:
+
+```bash
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu -m gpu -q                          # everything
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_00_environment.py -m gpu -q   # env pins, fingerprint, container digest (xfail outside the blessed image)
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_01_mok_kernel.py -m gpu -q    # MoK workspace + mxfp8_quantize vs inlined 32-block reference
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_02_wrapper_parity.py -m gpu -q # milestone 1a: mok vs reference backend (fwd loss, d_x cosine, grad norms)
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_03_window_determinism.py -m gpu -q # LAUNCH GATE (see below)
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_04_compile_cache.py -m gpu -q # MOK_COMPILE=1 inductor-cache determinism (rank-0 drives nested torchrun)
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_05_checkpoint_dcp.py -m gpu -q # multi-rank DCP round-trip + catch_up on GPU tensors
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_06_self_replay.py -m gpu -q   # LAUNCH GATE (see below)
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_07_memory_54b.py -m gpu -q    # 54B meta-device param audit; MOK_TEST_54B=1 adds the real-allocation smoke
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_08_attestation.py -m gpu -q   # step-B attestation: run_reference == derive_expected + deadline sanity
+```
+
+Tests skip (never fake-pass) when their prerequisite is absent: no torchrun
+env, no CUDA, non-SM103 silicon, or a missing `mok` wheel each skip with an
+explicit reason.
+
+**The launch gates.** `test_03_window_determinism` is the property the entire
+subnet economy rests on: the same toy window executed twice from identical
+θ_start must produce **bitwise-equal state roots** (parametrized over
+`adam_reset_every_windows` 1 and 5). `test_06_self_replay` is the audit
+mechanism itself: a miner window replayed through `WindowReplayer` on the same
+node must report `match=True`, and a tampered commitment must produce a
+mismatch naming the exact tensor. If either fails on a candidate node or
+container image, **do not launch** — an honest fleet on that stack would slash
+itself. Fix the environment (driver, container digest, NCCL pins, inductor
+cache); never loosen the assertions.
+
+### Two-node bitwise replay (Stage-0 go/no-go, run manually)
+
+The cross-node twin of `test_06` — proves replay verdicts transfer between
+machines, which is what makes audits meaningful:
+
+1. **Node A (miner):** inside the blessed container, run one toy window with
+   the fixed consensus seeds (`tests/gpu/_synthetic.py` is the reference
+   driver: `torchrun --standalone --nproc-per-node=8 tests/gpu/_synthetic.py
+   --data-dir <shards>` prints `STATE_ROOT=<hex>`), checkpoint θ_start via
+   `C.core.checkpoint.Checkpointer` before training, and record the window's
+   `WindowCommit` fields (θ_start `state_root`, `theta_end_hash`).
+2. **Ship to Node B:** the θ_start checkpoint directory, the run manifest, the
+   RunConfig YAML, and the commit. (In production auditors get all of this
+   from R2 + chain; here you copy it.)
+3. **Node B (auditor):** replay the window with the CLI over `C.core.replay`:
+
+   ```bash
+   python -m H.replay_window --manifest manifest.json --config C/configs/base.yaml \
+       --window <W> --miner-uid <UID> --theta-start <ckpt-dir> --backend mok --out report.json
+   ```
+
+4. **Compare roots:** exit code 0 and `"match": true` in `report.json` means
+   Node B reproduced Node A's `theta_end_hash` bitwise on different hardware of
+   the same class — the go signal. Any mismatch is a no-go: diff
+   `report.divergences`, the container digests, and `test_00`'s fingerprints
+   on both nodes before suspecting the code.

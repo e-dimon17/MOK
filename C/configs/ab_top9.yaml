@@ -1,0 +1,3 @@
+# Calibration A/B arm: activated FFN width 2.5*H via top-9 (audit §3). Zero param change.
+model:
+  top_k: 9

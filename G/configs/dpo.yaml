@@ -1,0 +1,31 @@
+# Step G phase 1 — DPO run configuration (parsed by G/dpo_train.py:load_settings).
+# Method per playbook: Tulu-3-preference + UltraFeedback (~300k pairs),
+# 1 epoch, LR 5e-7, beta 0.1, bf16; reference model = the SFT checkpoint.
+
+model_dir: runs/sft/final          # policy init = selected SFT checkpoint (F/eval_select.py)
+ref_model_dir: runs/sft/final      # DPO reference = the same SFT checkpoint
+output_dir: runs/dpo
+seed: 42
+
+epochs: 1
+lr: 5.0e-7
+beta: 0.1
+bf16: true
+
+# 8 ranks x micro 1 x accum 16 = 128 pairs per optimizer step.
+micro_batch_size: 1
+grad_accum: 16
+max_prompt_length: 2048
+max_length: 4096
+
+logging_steps: 10
+save_steps: 500
+eval_holdout_examples: 512
+max_examples: null                 # int caps the mixture for smoke runs
+
+# Mixture (truthy enables a source; both stream from the Hub via `datasets`).
+datasets:
+  tulu3_preference: true
+  ultrafeedback: true
+
+# Launch: accelerate launch --config_file F/configs/fsdp2.yaml -m G.dpo_train

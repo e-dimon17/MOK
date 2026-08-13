@@ -1,0 +1,62 @@
+"""Operator onboarding: hardware preflight, wallet/registration/bucket setup,
+and the seed-42 init publish/verify pair (playbook step B)."""
+
+from .init_publish import (
+    DEFAULT_INIT_SEED,
+    INIT_WINDOW,
+    InitPublishError,
+    build_and_publish_init,
+    fetch_and_verify_init,
+)
+from .preflight import (
+    GPU_NAME_TOKEN,
+    MIN_NVME_FREE_BYTES,
+    MIN_RAM_BYTES,
+    MIN_VRAM_BYTES,
+    REQUIRED_COMPUTE_CAP,
+    REQUIRED_GPUS,
+    GpuInfo,
+    PreflightCheck,
+    PreflightError,
+    PreflightReport,
+    run_preflight,
+)
+from .wallet_setup import (
+    R2_ENV_VARS,
+    R2_WRITE_ENV_VARS,
+    OnboardingError,
+    WalletError,
+    bucket_creds_from_env,
+    commit_bucket_credentials,
+    ensure_wallet,
+    register,
+    write_creds_from_env,
+)
+
+__all__ = [
+    "DEFAULT_INIT_SEED",
+    "GPU_NAME_TOKEN",
+    "INIT_WINDOW",
+    "MIN_NVME_FREE_BYTES",
+    "MIN_RAM_BYTES",
+    "MIN_VRAM_BYTES",
+    "R2_ENV_VARS",
+    "R2_WRITE_ENV_VARS",
+    "REQUIRED_COMPUTE_CAP",
+    "REQUIRED_GPUS",
+    "GpuInfo",
+    "InitPublishError",
+    "OnboardingError",
+    "PreflightCheck",
+    "PreflightError",
+    "PreflightReport",
+    "WalletError",
+    "bucket_creds_from_env",
+    "build_and_publish_init",
+    "commit_bucket_credentials",
+    "ensure_wallet",
+    "fetch_and_verify_init",
+    "register",
+    "run_preflight",
+    "write_creds_from_env",
+]

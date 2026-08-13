@@ -1,0 +1,44 @@
+# Step F — SFT run configuration (parsed by F/sft_train.py:load_settings).
+# Method per playbook: 2 epochs, LR 5e-6 -> 1e-5 warmup then cosine to 0,
+# seq 16384 with packing, bf16, FSDP2 (see fsdp_config), global batch
+# ~1M tokens: 8 ranks x micro_batch 1 x grad_accum 8 x 16384 = 1.05M.
+
+model_dir: checkpoints/hf/mok-54b-base
+output_dir: runs/sft
+seed: 42
+
+epochs: 2
+seq_len: 16384
+micro_batch_size: 1
+grad_accum: 4          # sparse models prefer SMALLER batch + HIGHER LR than dense
+                       # (ST-MoE §4; dense-tuned defaults mask pretraining gains)
+
+lr:
+  start: 5.0e-6
+  peak: 2.0e-5         # ST-MoE §4 sparse-FT direction; A/B against 1.0e-5 in eval_select
+  warmup_ratio: 0.03
+
+bf16: true
+gradient_checkpointing: true
+
+# Cadence: checkpoint + held-out eval every 200 optimizer steps; selection
+# among saved checkpoints is F/eval_select.py, NOT train loss.
+save_steps: 200
+eval_steps: 200
+logging_steps: 10
+eval_holdout_examples: 512
+
+# Mixture (playbook: Tulu-3 backbone + OpenHermes-2.5 + reasoning traces).
+datasets:
+  tulu3: true
+  openhermes: true
+  reasoning_traces: data/sft/reasoning_traces.jsonl
+
+# 13-gram decontamination against the step-H eval suites (JSON list of docs
+# or plain text, one doc per line). null disables.
+decontamination:
+  eval_ngrams_path: null
+  ngram_n: 13
+
+# Launch: accelerate launch --config_file F/configs/fsdp2.yaml -m F.sft_train
+fsdp_config: F/configs/fsdp2.yaml

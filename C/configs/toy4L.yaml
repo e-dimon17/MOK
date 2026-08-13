@@ -1,0 +1,26 @@
+# 4-layer toy configuration: attestation challenges (step B), GPU smoke tests,
+# and the Stage-0 two-node determinism gate. Satisfies all MoK constraints.
+model:
+  num_layers: 4
+  hidden_size: 1024
+  num_q_heads: 8
+  num_kv_heads: 2
+  head_dim: 128
+  vocab_size: 65536
+  seq_len: 4096
+  num_experts: 16
+  top_k: 4
+  intermediate_size: 256
+  num_dense_layers: 1              # dense prefix present, 3 MoE layers exercised
+  dense_intermediate_size: 2304    # 9 x 256 — matches activated MoE width
+  ep_size: 8
+window:
+  inner_steps: 20
+  tokens_per_rank_microbatch: 8192
+  grad_accum: 2
+  accum_ramp_start: 2
+inner:
+  lr:
+    kind: wsd_flat
+    peak_lr: 3.0e-4
+    warmup_steps: 10

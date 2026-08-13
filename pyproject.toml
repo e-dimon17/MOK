@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mok-subnet"
+version = "0.1.0"
+description = "Verified decentralized MoE pretraining subnet (Stage 2: MoK-54B) — data, fleet, training protocol, post-training, release"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "torch>=2.10.0,<3",
+    "bittensor>=9.10.0",
+    "aioboto3>=13.2.0",
+    "aiofiles>=24.1.0",
+    "pydantic>=2.8",
+    "PyYAML>=6.0",
+    "numpy>=1.26",
+    "zstandard>=0.23",
+    "openskill>=6.0",
+    "uvloop>=0.21",
+    "wandb>=0.19",
+]
+
+[project.optional-dependencies]
+# The MoK megakernel builds only on SM103 (B300-class) nodes; install there with:
+#   pip install "mok-subnet[gpu]" --no-build-isolation
+gpu = ["mixture-of-kittens @ git+https://github.com/cursor/mixture-of-kittens@8f90b74"]
+data = [
+    "tokenizers>=0.20",
+    "datasets>=3.0",
+    "datasketch>=1.6",
+    "pyarrow>=17.0",
+    "xxhash>=3.5",
+    "zstandard>=0.23",
+]
+post = [
+    "trl>=0.14",
+    "transformers>=4.48",
+    "accelerate>=1.2",
+    "vllm>=0.8",
+    "lm-eval>=0.4.7",
+    "sympy>=1.13",
+    "math-verify>=0.5",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "moto[s3]>=5.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[project.scripts]
+mok-data = "A.cli:main"
+mok-attest = "B.cli:attest_main"
+mok-onboard = "B.cli:onboard_main"
+mok-init-publish = "B.cli:init_publish_main"
+mok-calibrate = "B.cli:calibrate_main"
+mok-miner = "C.miner.main:main"
+mok-validator = "C.validator.main:main"
+mok-auditor = "C.auditor.main:main"
+mok-sft = "F.sft_train:main"
+mok-rl = "G.grpo_train:main"
+mok-eval = "H.run_evals:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mok_core*", "A*", "B*", "C*", "D*", "E*", "F*", "G*", "H*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: requires an 8xB300 (SM103) node; launch via torchrun --nproc-per-node=8",
+    "network: requires live network access (manual runs only)",
+]
+addopts = "-m 'not gpu and not network'"
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "A", "C4", "RET", "SIM"]
+ignore = ["E501"]

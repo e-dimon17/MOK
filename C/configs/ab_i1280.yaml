@@ -1,0 +1,4 @@
+# Calibration A/B arm: activated FFN width 2.81*H via wider experts (audit §3).
+# NOTE: changes total params (~67B) — param-count/memory tests must use this overlay.
+model:
+  intermediate_size: 1280

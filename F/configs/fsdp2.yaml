@@ -1,0 +1,26 @@
+# Accelerate FSDP2 launch config for one 8-GPU Tier-A node (step F SFT).
+#   accelerate launch --config_file F/configs/fsdp2.yaml -m F.sft_train --config F/configs/sft.yaml
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: FSDP
+downcast_bf16: 'no'
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 8
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false
+fsdp_config:
+  fsdp_version: 2
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  fsdp_transformer_layer_cls_to_wrap: MokMoeDecoderLayer
+  fsdp_reshard_after_forward: true
+  fsdp_offload_params: false
+  fsdp_state_dict_type: SHARDED_STATE_DICT
+  fsdp_activation_checkpointing: false   # HF gradient_checkpointing handles it
+  fsdp_cpu_ram_efficient_loading: true

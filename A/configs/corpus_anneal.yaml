@@ -1,0 +1,49 @@
+# Quality-anneal corpus — playbook step A anneal set / step D (~450B tokens):
+# top-decile FineWeb-Edu by quality score, FineMath-4+, curated code, and ~5%
+# instruction-formatted plain text. Consumed only in step D.
+name: anneal
+seq_len: 4096
+chars_per_token: 4.0
+
+dedup_order: [instruct_text, finemath_4plus, curated_code, fineweb_edu_top]
+
+sources:
+  - name: fineweb_edu_top
+    hf_path: HuggingFaceFW/fineweb-edu
+    hf_name: default
+    split: train
+    text_column: text
+    score_column: score         # educational quality score; >= 4 approximates the top decile
+    min_score: 4.0
+    weight: 0.55
+    max_tokens: 247500000000    # 247.5B
+
+  - name: finemath_4plus
+    hf_path: HuggingFaceTB/finemath
+    hf_name: finemath-4plus
+    split: train
+    text_column: text
+    weight: 0.20
+    max_tokens: 90000000000     # 90B
+
+  - name: curated_code
+    # bigcode/the-stack-v2 on the HF hub is IDs-only (contents are NOT hydrated
+    # by `datasets`) — same fix as the bulk corpus: starcoderdata, projected to
+    # the content column (subdirectory schemas differ). GATED: same terms
+    # acceptance as the bulk code source.
+    hf_path: bigcode/starcoderdata
+    split: train
+    text_column: content
+    hf_columns: [content]
+    weight: 0.20
+    max_tokens: 90000000000     # 90B
+
+  - name: instruct_text
+    # Instruction-formatted educational text rendered as plain text
+    # (OpenHermes-style content in a single text column).
+    hf_path: HuggingFaceTB/smollm-corpus
+    hf_name: cosmopedia-v2
+    split: train
+    text_column: text
+    weight: 0.05
+    max_tokens: 22500000000     # 22.5B

@@ -1,0 +1,104 @@
+The Merkle tree is a hash-based data structure in which every leaf node is the
+hash of a data block and every internal node is the hash of the concatenation
+of its two children. Verifying that a block belongs to the committed set needs
+only a logarithmic number of hashes, which is why content-addressed storage
+systems, version control tools, and blockchains all rely on the construction.
+
+Mixture-of-experts models route each token to a small subset of expert
+networks. With one hundred twenty-eight experts and top-eight routing, only a
+sixteenth of the expert parameters participate in any single token, so a model
+with fifty-four billion parameters activates roughly five and a half billion.
+The router is a learned linear map followed by a softmax over expert logits.
+
+def merkle_root(leaves):
+    level = list(leaves)
+    while len(level) > 1:
+        if len(level) % 2 == 1:
+            level.append(level[-1])
+        level = [h(a + b) for a, b in zip(level[::2], level[1::2])]
+    return level[0]
+
+Determinism in distributed training means that two independent executions of
+the same window, from the same starting weights, with the same data order and
+the same kernels, produce bitwise identical parameters. Achieving it requires
+fixed reduction orders, deterministic attention backward kernels, and a ban on
+autotuned kernel selection that could differ from node to node.
+
+The prime numbers below one hundred are 2, 3, 5, 7, 11, 13, 17, 19, 23, 29,
+31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, and 97. Euclid proved
+that the list of primes never ends: assume finitely many, multiply them all,
+add one, and the result is divisible by none of them — a contradiction.
+
+Byte-level byte pair encoding begins with an alphabet of two hundred fifty-six
+symbols, one per byte, so any string can be represented without unknown
+tokens. Training repeatedly merges the most frequent adjacent pair, and the
+merge table, applied greedily, defines the tokenizer forever after. Freezing
+the tokenizer freezes the token boundaries of every future dataset shard.
+
+class ShardWriter:
+    def __init__(self, out_dir, shard_sequences, seq_len):
+        self.buffer = []
+        self.out_dir = out_dir
+        self.shard_sequences = shard_sequences
+        self.seq_len = seq_len
+
+    def add(self, sequence):
+        self.buffer.append(sequence)
+        if len(self.buffer) == self.shard_sequences:
+            self.flush()
+
+A pseudo-gradient is the difference between the parameters at the start of a
+window and the parameters at its end. In DiLoCo-style training each worker
+computes the difference locally, compresses it with top-k sparsification and
+low-bit quantization, and the fleet applies an identical outer optimizer step
+to the shared replica, so every node advances in lockstep.
+
+Content addressing names a file by the hash of its bytes. Two files with the
+same name are therefore the same file, caches can never serve stale data, and
+a downloader can verify integrity without trusting the server. The shard files
+in this corpus are named by the first sixteen hex characters of their
+blake2b-256 digest, while the full digest becomes a Merkle leaf.
+
+The quick brown fox jumps over the lazy dog. Pack my box with five dozen
+liquor jugs. Sphinx of black quartz, judge my vow. How vexingly quick daft
+zebras jump. The five boxing wizards jump quickly. Jackdaws love my big
+sphinx of quartz. Mr. Jock, TV quiz PhD, bags few lynx.
+
+En un lugar de la Mancha, de cuyo nombre no quiero acordarme, no ha mucho
+tiempo que vivia un hidalgo de los de lanza en astillero, adarga antigua,
+rocin flaco y galgo corredor. Una olla de algo mas vaca que carnero, salpicon
+las mas noches, duelos y quebrantos los sabados.
+
+Integration by parts states that the integral of u dv equals u times v minus
+the integral of v du. Choosing u to be the polynomial factor and dv the
+exponential factor reduces the degree at each application, which is why the
+antiderivative of x squared times e to the x terminates after two rounds.
+
+SELECT shard_id, count(*) AS sequences, sum(tokens) AS total_tokens
+FROM packed_sequences
+GROUP BY shard_id
+HAVING count(*) = 65536
+ORDER BY shard_id ASC;
+
+Error feedback keeps the part of the gradient that compression discarded and
+adds it back before the next compression step. Without it, top-k
+sparsification biases the update toward coordinates that were large early in
+training; with it, every coordinate is eventually transmitted, and the
+compressed optimizer provably tracks its dense counterpart.
+
+The window certificate fixes the set of included peers before any node applies
+the outer step. Without the certificate, two honest nodes could gather
+different subsets during a network partition and diverge silently; with it,
+either a node has the certified payload set and advances, or it stalls and
+catches up later — bitwise lockstep is preserved in both cases.
+
+Rain fell on the harbor all afternoon, and the fishing boats knocked against
+the pilings with a sound like slow applause. By evening the clouds had moved
+inland, the water turned the color of hammered tin, and the lighthouse began
+its patient argument with the dark.
+
+A control group of two hundred plants received plain water while the
+treatment group received the nutrient solution. After six weeks the treated
+plants averaged thirty-one centimeters against twenty-four for the controls,
+a difference significant at the five percent level under a two-sample t-test
+with unequal variances.
