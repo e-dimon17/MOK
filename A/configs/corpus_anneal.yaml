@@ -1,11 +1,28 @@
-# Quality-anneal corpus — playbook step A anneal set / step D (~450B tokens):
-# top-decile FineWeb-Edu by quality score, FineMath-4+, curated code, and ~5%
-# instruction-formatted plain text. Consumed only in step D.
+# Quality-anneal corpus — playbook step A anneal set / step D:
+# top-tier FineWeb-Edu by quality score, the full FineMath family, curated
+# code, and instruction-formatted plain text. Consumed only in step D.
+#
+# Sizing reality (2026-08-13): the original 450B plan over-budgeted sources
+# that are smaller than their max_tokens — finemath-4plus is ~9.6B tokens
+# (whole set captured; "stream exhausted" is expected), and fineweb-edu at
+# score >= 4 keeps only ~2.1% of rows (~80B tokens expected). The additions
+# below (finemath-3plus / infiwebmath-* remainders via superset-after-subset
+# dedup ordering, plus a capped score >= 3.5 fineweb tier) rebuild the mix to
+# roughly: web ~52% (top tier prioritized), math ~16%, code ~26%, instruct
+# ~6% — ~350B tokens total, ~1.2 epochs under step D's 400B-token decay.
+#
+# `weight` is documentation of the intended share; the actual mixture is
+# whatever tokens each source physically contributes after dedup.
 name: anneal
 seq_len: 4096
 chars_per_token: 4.0
 
-dedup_order: [instruct_text, finemath_4plus, curated_code, fineweb_edu_top]
+# Priority order for exact-hash dedup: first occurrence wins. Subsets come
+# BEFORE their supersets (finemath_4plus before finemath_3plus, fineweb_edu_top
+# before fineweb_edu_high) so the premium tier keeps its docs and the superset
+# nets only the remainder — same trick as bulk's fineweb-edu-score-2.
+dedup_order: [instruct_text, finemath_4plus, infiwebmath_4plus, finemath_3plus,
+              infiwebmath_3plus, curated_code, fineweb_edu_top, fineweb_edu_high]
 
 sources:
   - name: fineweb_edu_top
@@ -13,18 +30,18 @@ sources:
     hf_name: default
     split: train
     text_column: text
-    score_column: score         # educational quality score; >= 4 approximates the top decile
+    score_column: score         # educational quality score; >= 4 is ~top 2% observed
     min_score: 4.0
-    weight: 0.55
-    max_tokens: 247500000000    # 247.5B
+    weight: 0.23
+    max_tokens: 247500000000    # aspirational; stream yields ~80B before exhaustion
 
   - name: finemath_4plus
     hf_path: HuggingFaceTB/finemath
     hf_name: finemath-4plus
     split: train
     text_column: text
-    weight: 0.20
-    max_tokens: 90000000000     # 90B
+    weight: 0.03
+    max_tokens: 90000000000     # whole set is ~9.6B tokens; exhausts early (fine)
 
   - name: curated_code
     # bigcode/the-stack-v2 on the HF hub is IDs-only (contents are NOT hydrated
@@ -35,7 +52,7 @@ sources:
     split: train
     text_column: content
     hf_columns: [content]
-    weight: 0.20
+    weight: 0.26
     max_tokens: 90000000000     # 90B
 
   - name: instruct_text
@@ -45,5 +62,50 @@ sources:
     hf_name: cosmopedia-v2
     split: train
     text_column: text
-    weight: 0.05
+    weight: 0.06
     max_tokens: 22500000000     # 22.5B
+
+  - name: finemath_3plus
+    # Superset of finemath-4plus (~34B tokens total); placed after finemath_4plus
+    # in dedup_order, so it nets only the 3 <= score < 4 remainder (~24B).
+    hf_path: HuggingFaceTB/finemath
+    hf_name: finemath-3plus
+    split: train
+    text_column: text
+    weight: 0.07
+    max_tokens: 40000000000     # above actual size; ends by stream exhaustion
+
+  - name: infiwebmath_4plus
+    # InfiMM-WebMath pipeline, 4+ quality tier (~8.5B tokens) — distinct
+    # extraction from finemath; adds unique math web pages.
+    hf_path: HuggingFaceTB/finemath
+    hf_name: infiwebmath-4plus
+    split: train
+    text_column: text
+    weight: 0.02
+    max_tokens: 12000000000     # above actual size; ends by stream exhaustion
+
+  - name: infiwebmath_3plus
+    # Superset of infiwebmath-4plus (~20.5B tokens total); nets the [3, 4)
+    # remainder (~12B) after dedup against the 4+ tier.
+    hf_path: HuggingFaceTB/finemath
+    hf_name: infiwebmath-3plus
+    split: train
+    text_column: text
+    weight: 0.04
+    max_tokens: 25000000000     # above actual size; ends by stream exhaustion
+
+  - name: fineweb_edu_high
+    # Mid-tier fineweb-edu backfill: score >= 3.5, capped at 100B tokens.
+    # Dedup-ordered AFTER fineweb_edu_top, so score >= 4 docs stay credited to
+    # the top tier and this source nets the [3.5, 4) band. Keeps total web
+    # share ~52% and the anneal corpus near ~350B tokens (~1.2 epochs of the
+    # 400B-token step-D decay).
+    hf_path: HuggingFaceFW/fineweb-edu
+    hf_name: default
+    split: train
+    text_column: text
+    score_column: score
+    min_score: 3.5
+    weight: 0.29
+    max_tokens: 100000000000    # 100B hard cap (budget-bound, unlike the top tier)
