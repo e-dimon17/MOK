@@ -22,7 +22,8 @@ chars_per_token: 4.0
 # before fineweb_edu_high) so the premium tier keeps its docs and the superset
 # nets only the remainder — same trick as bulk's fineweb-edu-score-2.
 dedup_order: [instruct_text, finemath_4plus, infiwebmath_4plus, finemath_3plus,
-              infiwebmath_3plus, curated_code, fineweb_edu_top, fineweb_edu_high]
+              infiwebmath_3plus, curated_code, fineweb_edu_top, fineweb_edu_high,
+              fineweb_edu_mid]
 
 sources:
   - name: fineweb_edu_top
@@ -109,3 +110,19 @@ sources:
     min_score: 3.5
     weight: 0.29
     max_tokens: 100000000000    # 100B hard cap (budget-bound, unlike the top tier)
+
+  - name: fineweb_edu_mid
+    # Web backfill after the 2026-08-14 dedup revealed FineWeb-Edu's per-dump-only
+    # deduplication: exact-hash dedup collapses the score-filtered tiers by ~70%
+    # (a good page recurs across many CommonCrawl dumps), leaving the corpus
+    # ~47% code. This tier takes the remaining quality range (score >= 3.0),
+    # capped at 300B RAW tokens; LAST in dedup_order, so it nets only pages the
+    # top/high tiers didn't already keep (~90-105B unique tokens expected).
+    hf_path: HuggingFaceFW/fineweb-edu
+    hf_name: default
+    split: train
+    text_column: text
+    score_column: score
+    min_score: 3.0
+    weight: 0.30
+    max_tokens: 300000000000    # 300B raw cap; dedup nets roughly a third of it
