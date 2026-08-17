@@ -731,3 +731,70 @@ def test_apps_import_clean_without_heavy_deps() -> None:
         check=True,
     )
     assert "clean" in out.stdout
+
+
+# --------------------------------------------------------------------------- #
+# (7) Static bucket map + owner-bucket dataset key layout
+# --------------------------------------------------------------------------- #
+
+
+def _creds(tag: str) -> dict[str, str]:
+    return {
+        "account_id": f"acct-{tag}",
+        "bucket_name": f"bucket-{tag}",
+        "access_key_id": f"ak-{tag}",
+        "secret_access_key": f"sk-{tag}",
+    }
+
+
+def test_dataset_shard_key_matches_upload_layout() -> None:
+    from C.miner.bootstrap import dataset_shard_key
+
+    leaf = "ab" * 32
+    # The layout `mok-data upload` publishes: datasets/<name>/shard-<hash16>.bin
+    assert dataset_shard_key("bulk", leaf) == f"datasets/bulk/shard-{leaf[:16]}.bin"
+    with pytest.raises(ValueError, match="invalid dataset name"):
+        dataset_shard_key("a/b", leaf)
+
+
+def test_load_static_buckets(tmp_path: Path) -> None:
+    import json as _json
+
+    from C.miner.bootstrap import BootstrapError, load_static_buckets
+
+    assert load_static_buckets(env={}) == {}
+    good = tmp_path / "buckets.json"
+    good.write_text(_json.dumps({"0": _creds("own"), "2": _creds("miner")}), encoding="utf-8")
+    parsed = load_static_buckets(env={"MOK_STATIC_BUCKETS": str(good)})
+    assert set(parsed) == {0, 2}
+    assert parsed[2] == BucketCreds(**_creds("miner"))
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json", encoding="utf-8")
+    with pytest.raises(BootstrapError, match="MOK_STATIC_BUCKETS"):
+        load_static_buckets(env={"MOK_STATIC_BUCKETS": str(bad)})
+    with pytest.raises(BootstrapError, match="MOK_STATIC_BUCKETS"):
+        load_static_buckets(env={"MOK_STATIC_BUCKETS": str(tmp_path / "absent.json")})
+
+
+def test_node_context_bucket_fallbacks_use_static_map() -> None:
+    from unittest.mock import MagicMock
+
+    own = BucketCreds(**_creds("own"))
+    static = {0: BucketCreds(**_creds("owner")), 2: BucketCreds(**_creds("miner"))}
+    chain = MagicMock()
+    chain.get_bucket.return_value = None          # every slot holds a non-bucket commitment
+    chain.get_all_buckets.return_value = {1: BucketCreds(**_creds("validator"))}
+    chain.stakes.return_value = {2: 5.0}          # leader = uid 2 (highest stake)
+    ctx = NodeContext(
+        role="validator", cfg=MagicMock(), manifest=MagicMock(), uid=1,
+        signer=MagicMock(), chain=chain, storage=MagicMock(), own_bucket=own,
+        shard_caches={}, shard_indexes={}, fetch_fns={}, metrics=MagicMock(),
+        comm=MagicMock(), clock=MagicMock(), rank=0, world_size=1,
+        protocol_world_size=1, device="cpu", state_dir=Path("."),
+        static_buckets=static,
+    )
+    assert ctx.owner_bucket() == static[0]        # chain slot empty -> static map
+    assert ctx.leader_bucket() == static[2]       # leader's slot empty -> static map
+    peers = ctx.peer_buckets()
+    assert peers[0] == static[0] and peers[2] == static[2]
+    assert peers[1] == BucketCreds(**_creds("validator"))   # chain wins where present

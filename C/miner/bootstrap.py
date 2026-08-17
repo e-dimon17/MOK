@@ -39,6 +39,7 @@ import argparse
 import asyncio
 import hashlib
 import importlib.util
+import json
 import os
 import time
 from collections import OrderedDict
@@ -72,6 +73,7 @@ from mok_core.config import RunConfig, config_hash, load_run_config
 from mok_core.config.manifest import DatasetManifestRef, PRFSpec, RunManifest
 from mok_core.config.schemas import BucketCreds
 from mok_core.data import DatasetShardIndex, ShardCache, verify_index_matches_ref
+from mok_core.data.shards import shard_filename
 from mok_core.determinism import (
     assert_container_digest,
     enforce_determinism,
@@ -111,7 +113,9 @@ __all__ = [
     "catch_up_replica",
     "choose_backend",
     "dataset_index_key",
+    "dataset_shard_key",
     "load_master_state",
+    "load_static_buckets",
     "materialize_replica",
     "resolve_leader_uid",
     "storage_fetch_fn",
@@ -594,6 +598,16 @@ def dataset_index_key(name: str) -> str:
     return f"datasets/{name}/shard_index.json"
 
 
+def dataset_shard_key(name: str, leaf_hex: str) -> str:
+    """Owner-bucket key of one shard — the layout `mok-data upload` publishes
+    (`datasets/<name>/shard-<hash16>.bin`, mirroring step A's local filenames).
+    Content is hash-verified against the manifest, so the key layout is not
+    consensus-bearing."""
+    if not name or "/" in name:
+        raise ValueError(f"invalid dataset name {name!r}")
+    return f"datasets/{name}/{shard_filename(bytes.fromhex(leaf_hex))}"
+
+
 @dataclass
 class _FallbackHarness:
     """Minimal in-memory `LocalHarness`: synthetic verified dataset, scripted
@@ -737,7 +751,7 @@ class _FallbackHarness:
             now,
         )
         for digest, path in zip(hashes, shard_paths, strict=True):
-            harness.store[(owner_bucket.bucket_name, keys.shard_key(digest[:16]))] = (
+            harness.store[(owner_bucket.bucket_name, dataset_shard_key("bulk", digest))] = (
                 path.read_bytes(),
                 now,
             )
@@ -793,17 +807,22 @@ class NodeContext:
     state_dir: Path
     local: bool = False
     dev_insecure: bool = False
+    static_buckets: dict[int, BucketCreds] = field(default_factory=dict)
 
     @property
     def run_seed(self) -> bytes:
         return bytes.fromhex(self.manifest.prf.run_seed_hex)
 
     def owner_bucket(self) -> BucketCreds:
-        bucket = self.chain.get_bucket(OWNER_UID)
+        bucket = self.chain.get_bucket(OWNER_UID) or self.static_buckets.get(OWNER_UID)
         return bucket if bucket is not None else self.own_bucket
 
     def peer_buckets(self) -> dict[int, BucketCreds]:
-        buckets = dict(self.chain.get_all_buckets())
+        # Chain slots are single-valued: a miner's BucketCommit is overwritten by
+        # its per-window WindowCommit, so the static map (MOK_STATIC_BUCKETS)
+        # backfills peers whose slot currently holds a different commitment.
+        buckets = dict(self.static_buckets)
+        buckets.update(self.chain.get_all_buckets())
         buckets.setdefault(self.uid, self.own_bucket)
         return buckets
 
@@ -811,7 +830,8 @@ class NodeContext:
         return resolve_leader_uid(self.chain, fallback=self.uid)
 
     def leader_bucket(self) -> BucketCreds:
-        bucket = self.chain.get_bucket(self.leader_uid())
+        leader = self.leader_uid()
+        bucket = self.chain.get_bucket(leader) or self.static_buckets.get(leader)
         return bucket if bucket is not None else self.own_bucket
 
     async def aclose(self) -> None:
@@ -845,7 +865,9 @@ def storage_fetch_fn(storage: Any, bucket: BucketCreds, index: DatasetShardIndex
 
     async def fetch(shard_idx: int) -> bytes:
         leaf = index.shard_hashes[shard_idx]
-        return await storage.get_bytes(bucket, keys.shard_key(leaf[:16]), expected_hash=leaf)
+        return await storage.get_bytes(
+            bucket, dataset_shard_key(index.name, leaf), expected_hash=leaf
+        )
 
     return fetch
 
@@ -1144,6 +1166,7 @@ async def bootstrap(
         args.state_dir if args.state_dir is not None else f"mok-state/{role}"
     ).expanduser()
     state_dir.mkdir(parents=True, exist_ok=True)
+    static_buckets = load_static_buckets()
 
     if local:
         h = harness if harness is not None else _load_local_harness(cfg, root=state_dir, uid=args.uid or 0)
@@ -1175,9 +1198,14 @@ async def bootstrap(
         manifest_hash = chain.get_manifest_hash(OWNER_UID)
         if manifest_hash is None:
             raise BootstrapError(f"no manifest committed by owner uid {OWNER_UID}")
-        owner_bucket = chain.get_bucket(OWNER_UID)
+        # The owner's single commitment slot holds the ManifestCommit, so its
+        # bucket is normally resolvable only through the static map.
+        owner_bucket = chain.get_bucket(OWNER_UID) or static_buckets.get(OWNER_UID)
         if owner_bucket is None:
-            raise BootstrapError(f"owner uid {OWNER_UID} has no committed bucket")
+            raise BootstrapError(
+                f"owner uid {OWNER_UID} has no committed bucket and no "
+                f"{STATIC_BUCKETS_ENV} entry"
+            )
         manifest = await _fetch_manifest(storage, owner_bucket, manifest_hash)
         signer = ChainSigner(chain=chain, hotkey=chain.hotkey_of(uid) or "")
         protocol_world_size = cfg.model.ep_size
@@ -1204,7 +1232,7 @@ async def bootstrap(
         cfg,
         manifest,
         storage,
-        chain.get_bucket(OWNER_UID) or own_bucket,
+        owner_bucket,
         cache_dir=Path(cfg.data.shard_cache_dir).expanduser()
         if not local
         else state_dir / "shard-cache",
@@ -1243,7 +1271,26 @@ async def bootstrap(
         state_dir=state_dir,
         local=local,
         dev_insecure=bool(args.dev_insecure),
+        static_buckets=static_buckets,
     )
+
+
+#: Optional JSON file of {uid: BucketCreds fields} — read credentials for peers
+#: whose single chain commitment slot currently holds a non-bucket commitment
+#: (the owner's ManifestCommit, a miner's per-window WindowCommit).
+STATIC_BUCKETS_ENV = "MOK_STATIC_BUCKETS"
+
+
+def load_static_buckets(env: Mapping[str, str] | None = None) -> dict[int, BucketCreds]:
+    """Parse the MOK_STATIC_BUCKETS JSON file into {uid: BucketCreds}; {} if unset."""
+    path = (env if env is not None else os.environ).get(STATIC_BUCKETS_ENV, "")
+    if not path:
+        return {}
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        return {int(uid): BucketCreds(**creds) for uid, creds in raw.items()}
+    except (OSError, ValueError, TypeError) as e:
+        raise BootstrapError(f"unreadable {STATIC_BUCKETS_ENV} file {path!r}: {e}") from e
 
 
 def _bucket_from_env() -> BucketCreds:
