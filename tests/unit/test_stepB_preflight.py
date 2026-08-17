@@ -150,15 +150,21 @@ def test_fail_compute_cap_wrong(tmp_path) -> None:
     assert by_name(report)["compute_cap"] is False
 
 
+def _no_smi(cmd):
+    # Simulates a host without nvidia-smi — without this, compute_caps_csv=None
+    # falls through to a LIVE probe, which succeeds on GPU-equipped test hosts.
+    raise FileNotFoundError("nvidia-smi not present")
+
+
 def test_compute_cap_falls_back_to_xml(tmp_path) -> None:
     report = run_preflight(
-        **good_kwargs(tmp_path, smi_xml=smi_xml(cap="10.3"), compute_caps_csv=None)
+        **good_kwargs(tmp_path, smi_xml=smi_xml(cap="10.3"), compute_caps_csv=None, runner=_no_smi)
     )
     assert by_name(report)["compute_cap"] is True
 
 
 def test_compute_cap_unavailable_from_both_paths_fails(tmp_path) -> None:
-    report = run_preflight(**good_kwargs(tmp_path, compute_caps_csv=None))
+    report = run_preflight(**good_kwargs(tmp_path, compute_caps_csv=None, runner=_no_smi))
     check = {c.name: c for c in report.checks}["compute_cap"]
     assert not check.ok
     assert "unavailable" in check.detail

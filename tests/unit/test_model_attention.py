@@ -94,7 +94,8 @@ def test_rope_theta_override_changes_output_and_cache() -> None:
 def test_backend_resolver_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(ATTENTION_BACKEND_ENV, raising=False)
     assert resolve_attention_backend() in ("cudnn_det", "flash_det")
-    assert not torch.cuda.is_available()  # CPU suite: default must be flash_det
+    # CUDA-less hosts must default to flash_det (suite runs on both kinds).
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert resolve_attention_backend() == "flash_det"
 
     monkeypatch.setenv(ATTENTION_BACKEND_ENV, "cudnn_det")
@@ -104,12 +105,17 @@ def test_backend_resolver_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
         resolve_attention_backend()
 
 
-def test_sdpa_context_falls_back_to_math_on_cpu() -> None:
-    with sdpa_backend() as pinned:
+def test_sdpa_context_falls_back_to_math_on_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Explicit CPU device always pins math, even on CUDA hosts.
+    with sdpa_backend(device="cpu") as pinned:
         assert pinned == "math"
         q = torch.randn(1, 2, 4, 8)
         y = torch.nn.functional.scaled_dot_product_attention(q, q, q, is_causal=True)
     assert y.shape == (1, 2, 4, 8)
+    # No device given: CUDA-less hosts fall back to math too.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with sdpa_backend() as pinned:
+        assert pinned == "math"
 
 
 def test_no_dropout_anywhere() -> None:

@@ -320,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
             started_dist = True
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     device = args.device or (f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
-    if torch.cuda.is_available():
+    if torch.device(device).type == "cuda":
         torch.cuda.set_device(torch.device(device))
 
     try:

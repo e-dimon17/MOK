@@ -200,6 +200,9 @@ class MoKMoELayer(nn.Module):
         """x: bf16 [T, H] -> (y bf16 [T, H], RouterOutput). Router runs outside MoK."""
         if backend not in _BACKENDS:
             raise ValueError(f"backend must be one of {_BACKENDS}, got {backend!r}")
+        # Under CUDA autocast the preceding RMSNorm hands us fp32; both the MoK
+        # kernel and the reference math contract on master-dtype activations.
+        x = x.to(self.shared_gate.dtype)
         route = self.router(x)
         if backend == "reference":
             y = self._reference_forward(x, route)

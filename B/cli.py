@@ -57,6 +57,7 @@ from B.onboarding.wallet_setup import (
 )
 from mok_core.config import RunConfig, load_run_config
 from mok_core.data import DatasetShardIndex
+from mok_core.determinism import enforce_determinism
 from mok_core.data.shards import shard_filename
 from mok_core.model import MoKTransformer, init_model, reference_config
 
@@ -155,6 +156,7 @@ def attest_main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "respond":
         challenge = AttestationChallenge.model_validate(_read_json(args.challenge))
+        enforce_determinism()  # same pins as the torchrun entry (reference_step.main)
         response = run_reference(challenge, backend=args.backend, device=args.device)
         _emit(response.model_dump(), args.out)
         return 0
@@ -198,6 +200,7 @@ def build_onboard_parser() -> argparse.ArgumentParser:
 def onboard_main(argv: list[str] | None = None) -> int:
     args = build_onboard_parser().parse_args(argv)
     cfg = _load_config(args.config, args.overlay)
+    enforce_determinism()  # process entry, before any torch work (DCP init-fetch creates a CUDA context)
 
     def step(name: str, **fields: Any) -> None:
         _emit({"step": name, **fields})

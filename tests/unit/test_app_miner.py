@@ -653,11 +653,25 @@ def test_desync_then_catch_up_recovery(
 # --------------------------------------------------------------------------- #
 
 
-def test_bootstrap_local_harness(tmp_path: Path) -> None:
+def test_bootstrap_local_harness(tmp_path: Path, monkeypatch) -> None:
+    import functools
+    import importlib
+
     import yaml
 
     from mok_core.config import config_hash
+    from mok_core.determinism import enforce_determinism
 
+    # C.miner re-exports the bootstrap *function*, shadowing the submodule.
+    bootstrap_mod = importlib.import_module("C.miner.bootstrap")
+
+    # In-process: earlier tests' DCP saves already created a CUDA context on
+    # GPU hosts; keep real enforcement but skip the process-entry order check.
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "enforce_determinism",
+        functools.partial(enforce_determinism, allow_uninitialized_cuda_check=False),
+    )
     cfg = make_app_cfg()
     cfg_path = tmp_path / "app-config.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg.model_dump(mode="json")), encoding="utf-8")

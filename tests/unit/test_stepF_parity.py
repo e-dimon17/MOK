@@ -86,7 +86,7 @@ def test_logit_parity_fp32(parity_pair) -> None:
     reference, hf_model, cfg = parity_pair
     generator = torch.Generator().manual_seed(11)
     tokens = torch.randint(0, cfg.vocab_size, (2, 24), generator=generator)
-    with torch.no_grad(), sdpa_backend():
+    with torch.no_grad(), sdpa_backend(device="cpu"):
         ref_logits = reference(tokens).logits
         hf_logits = hf_model(input_ids=tokens).logits
     assert ref_logits.dtype == hf_logits.dtype == torch.float32
@@ -98,7 +98,7 @@ def test_router_selection_parity(parity_pair) -> None:
     reference, hf_model, cfg = parity_pair
     generator = torch.Generator().manual_seed(12)
     tokens = torch.randint(0, cfg.vocab_size, (1, 16), generator=generator)
-    with torch.no_grad(), sdpa_backend():
+    with torch.no_grad(), sdpa_backend(device="cpu"):
         ref_out = reference(tokens)
     hidden = ref_out.loss_inputs  # per-layer RouterOutput from the reference forward
     # Replay the HF gate on the same normed activations by re-running the HF

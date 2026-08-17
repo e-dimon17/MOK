@@ -80,9 +80,14 @@ class TestTake:
         snap = CpuSnapshot.take(iter(params.items()))
         assert set(snap.tensors) == set(params)
 
-    def test_pin_default_resolves_to_cuda_availability(self) -> None:
+    def test_pin_default_resolves_from_source_devices(self) -> None:
+        # CPU sources never pin, even on CUDA hosts (pinned allocation would
+        # spin up a CUDA context pure-CPU callers must not create).
         snap = CpuSnapshot.take(_make_params(4))
-        assert snap.pinned == torch.cuda.is_available()
+        assert snap.pinned is False
+        if torch.cuda.is_available():
+            cuda_params = {"p": torch.nn.Parameter(torch.zeros(2, device="cuda"))}
+            assert CpuSnapshot.take(cuda_params).pinned is True
 
     def test_duplicate_names_rejected(self) -> None:
         p = nn.Parameter(torch.zeros(2))

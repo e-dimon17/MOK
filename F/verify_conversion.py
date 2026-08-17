@@ -84,7 +84,7 @@ def verify(
     generator = torch.Generator(device="cpu").manual_seed(seed)
     tokens = torch.randint(0, model_cfg.vocab_size, (batch, seq), generator=generator)
 
-    with torch.no_grad(), sdpa_backend():
+    with torch.no_grad(), sdpa_backend(device=tokens.device):
         ref_logits = reference(tokens).logits.float()
         hf_logits = hf_model(input_ids=tokens).logits.float()
 

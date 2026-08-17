@@ -104,6 +104,9 @@ def test_attest_respond_delegates_to_run_reference(tmp_path: Path, monkeypatch) 
         return response
 
     monkeypatch.setattr(cli, "run_reference", fake_run_reference)
+    # In-process invocation: earlier suite tests may have initialized CUDA (torch
+    # DCP's writer does), which the process-entry determinism guard must reject.
+    monkeypatch.setattr(cli, "enforce_determinism", lambda: None)
     out = tmp_path / "r.json"
     rc = cli.attest_main(
         ["respond", "--challenge", str(challenge_file), "--backend", "reference",
@@ -137,7 +140,8 @@ def test_attest_verify_exit_codes(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_onboard_all_skips(cfg_yaml: Path, capsys) -> None:
+def test_onboard_all_skips(cfg_yaml: Path, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "enforce_determinism", lambda: None)  # in-process: CUDA may exist
     rc = cli.onboard_main(
         ["--config", str(cfg_yaml)]
         + [f"--skip-{s}" for s in ("preflight", "wallet", "register", "bucket", "init", "attest")]
@@ -159,6 +163,7 @@ def test_onboard_flow_orchestration(cfg_yaml: Path, monkeypatch, capsys) -> None
     report.checks = []
     report.strict.side_effect = lambda: order.append("strict")
     monkeypatch.setattr(cli, "run_preflight", lambda **kw: (order.append("preflight"), report)[1])
+    monkeypatch.setattr(cli, "enforce_determinism", lambda: None)  # in-process: CUDA may exist
 
     wallet = object()
     monkeypatch.setattr(
@@ -214,6 +219,7 @@ def test_onboard_nondeterministic_node_fails_attest(cfg_yaml: Path, monkeypatch)
         )
 
     monkeypatch.setattr(cli, "run_reference", flaky)
+    monkeypatch.setattr(cli, "enforce_determinism", lambda: None)  # in-process: CUDA may exist
     rc = cli.onboard_main(
         ["--config", str(cfg_yaml), "--skip-preflight", "--skip-wallet", "--skip-register",
          "--skip-bucket", "--skip-init"]
@@ -223,6 +229,7 @@ def test_onboard_nondeterministic_node_fails_attest(cfg_yaml: Path, monkeypatch)
 
 def test_onboard_init_requires_owner_uid(cfg_yaml: Path, monkeypatch) -> None:
     monkeypatch.setattr(cli, "_make_chain", lambda cfg, w=None: MagicMock())
+    monkeypatch.setattr(cli, "enforce_determinism", lambda: None)  # in-process: CUDA may exist
     with pytest.raises(SystemExit, match="--owner-uid"):
         cli.onboard_main(
             ["--config", str(cfg_yaml), "--skip-preflight", "--skip-wallet", "--skip-register",

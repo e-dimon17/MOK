@@ -52,16 +52,19 @@ class Router(nn.Module):
         """x: [T, H] any float dtype -> RouterOutput (all routing math in fp32)."""
         if x.dim() != 2:
             raise ValueError(f"router input must be [T, H], got {tuple(x.shape)}")
-        logits = self.proj(x.float())                                # fp32 [T, E]
-        biased = logits + self.balance_bias                          # selection only
-        _, experts = torch.topk(biased, self.top_k, dim=-1)          # int64 [T, topk]
-        selected = logits.gather(1, experts)                         # UNBIASED logits
-        weights = torch.softmax(selected, dim=-1)                    # fp32 [T, topk]
-        # Not torch.bincount: its CUDA kernel is flagged nondeterministic and
-        # raises under use_deterministic_algorithms(True). Equality-matrix sum
-        # is deterministic on every device.
-        expert_ids = torch.arange(self.num_experts, device=experts.device)
-        load = (experts.reshape(-1, 1) == expert_ids).sum(dim=0)
+        # bf16 autocast would silently demote the projection matmul, breaking
+        # the fp32-router guarantee — routing math runs outside any autocast.
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            logits = self.proj(x.float())                            # fp32 [T, E]
+            biased = logits + self.balance_bias                      # selection only
+            _, experts = torch.topk(biased, self.top_k, dim=-1)      # int64 [T, topk]
+            selected = logits.gather(1, experts)                     # UNBIASED logits
+            weights = torch.softmax(selected, dim=-1)                # fp32 [T, topk]
+            # Not torch.bincount: its CUDA kernel is flagged nondeterministic and
+            # raises under use_deterministic_algorithms(True). Equality-matrix sum
+            # is deterministic on every device.
+            expert_ids = torch.arange(self.num_experts, device=experts.device)
+            load = (experts.reshape(-1, 1) == expert_ids).sum(dim=0)
         return RouterOutput(weights=weights, experts=experts, router_logits=logits, load=load)
 
     @torch.no_grad()

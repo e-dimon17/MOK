@@ -133,9 +133,19 @@ def test_shipped_corpus_configs_load():
         assert cfg.name == expected_name
         assert cfg.seq_len == 4096
         assert len(cfg.dedup_order) == len(cfg.sources)
-        # dedup order runs smallest sources first
-        budgets = [cfg.source(n).max_tokens for n in cfg.dedup_order]
-        assert budgets == sorted(budgets)
+
+    # bulk: dedup order runs smallest sources first
+    bulk = load_corpus_config(CONFIGS_DIR / "corpus_bulk.yaml")
+    budgets = [bulk.source(n).max_tokens for n in bulk.dedup_order]
+    assert budgets == sorted(budgets)
+
+    # anneal: subsets dedup BEFORE their supersets so premium tiers keep their
+    # docs and each superset nets only the remainder (see corpus_anneal.yaml).
+    anneal = load_corpus_config(CONFIGS_DIR / "corpus_anneal.yaml")
+    order = {name: i for i, name in enumerate(anneal.dedup_order)}
+    assert order["finemath_4plus"] < order["finemath_3plus"]
+    assert order["infiwebmath_4plus"] < order["infiwebmath_3plus"]
+    assert order["fineweb_edu_top"] < order["fineweb_edu_high"] < order["fineweb_edu_mid"]
 
 
 def test_shipped_bulk_weights_match_playbook():

@@ -151,7 +151,7 @@ class MoKTransformer(nn.Module):
         if tokens.dim() != 2:
             raise ValueError(f"tokens must be [B, S], got {tuple(tokens.shape)}")
         router_outputs: list[RouterOutput] = []
-        with sdpa_backend():
+        with sdpa_backend(device=self.embed.weight.device):
             x = self.embed(tokens)
             for block in self.blocks:
                 x, route = block(x, self.backend)

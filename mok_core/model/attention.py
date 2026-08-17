@@ -44,16 +44,24 @@ def resolve_attention_backend() -> AttentionBackend:
 
 
 @contextlib.contextmanager
-def sdpa_backend(backend: AttentionBackend | None = None) -> Iterator[str]:
+def sdpa_backend(
+    backend: AttentionBackend | None = None,
+    *,
+    device: torch.device | str | None = None,
+) -> Iterator[str]:
     """Pin `torch.nn.attention.sdpa_kernel` to exactly one backend.
 
-    On CPU-only hosts (tests, verify_bundle) SDPA falls back to the math
-    backend — the pinned-kernel requirement only binds on CUDA. Yields the
-    name of the backend actually pinned.
+    CPU tensors (tests, verify_bundle, the step-F parity gate — including on
+    hosts that *have* GPUs) can only use the math backend, so the pin follows
+    `device` when given, not host CUDA availability. Yields the name of the
+    backend actually pinned.
     """
     from torch.nn.attention import SDPBackend, sdpa_kernel  # noqa: PLC0415
 
-    if not torch.cuda.is_available():
+    on_cpu = (
+        torch.device(device).type == "cpu" if device is not None else not torch.cuda.is_available()
+    )
+    if on_cpu:
         with sdpa_kernel([SDPBackend.MATH]):
             yield "math"
         return

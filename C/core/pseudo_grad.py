@@ -51,14 +51,20 @@ class CpuSnapshot:
     ) -> CpuSnapshot:
         """Snapshot every named tensor into fresh CPU buffers.
 
-        `pin=None` (default) resolves to `torch.cuda.is_available()`: pinned
-        buffers + async D2H copies on GPU hosts (fenced with one synchronize
-        before returning), plain pageable copies on CPU hosts.
+        `pin=None` (default) resolves to True only when snapshotting CUDA
+        tensors: pinned buffers + async D2H copies (fenced with one synchronize
+        before returning). CPU-resident sources take plain pageable copies even
+        on CUDA hosts — allocating pinned memory would spin up a CUDA context,
+        which pure-CPU callers (and enforce_determinism after them) must not do.
         """
-        use_pin = torch.cuda.is_available() if pin is None else bool(pin)
+        items = [(name, param) for name, param in _named_items(named_params)]
+        if pin is None:
+            use_pin = torch.cuda.is_available() and any(p.is_cuda for _, p in items)
+        else:
+            use_pin = bool(pin)
         out: dict[str, torch.Tensor] = {}
         with torch.no_grad():
-            for name, param in _named_items(named_params):
+            for name, param in items:
                 src = param.detach()
                 buf = torch.empty_like(src, device="cpu", pin_memory=use_pin)
                 buf.copy_(src, non_blocking=use_pin)
