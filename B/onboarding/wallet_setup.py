@@ -100,7 +100,8 @@ def ensure_wallet(
         def wallet_factory() -> Any:
             import bittensor as bt  # noqa: PLC0415 — heavy, lazy by design
 
-            return bt.wallet(name=cfg.wallet_name, hotkey=cfg.wallet_hotkey)
+            wallet_cls = getattr(bt, "wallet", None) or bt.Wallet  # SDK >=10 casing
+            return wallet_cls(name=cfg.wallet_name, hotkey=cfg.wallet_hotkey)
 
     wallet = wallet_factory()
     missing = [
