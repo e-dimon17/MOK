@@ -436,14 +436,14 @@ def test_loopback_two_phase_commit_and_payload(loopback: dict[str, Any]) -> None
     commit = chain.commit_window.call_args.args[0]
     assert isinstance(commit, WindowCommit)
     assert commit.window == WINDOW
-    assert commit.payload_hash == outcome.payload_hash
+    assert commit.binds_payload_hash(outcome.payload_hash)   # wire v2: 128-bit prefix bound on-chain
     assert commit.state_root == outcome.state_root_start
     assert commit.theta_end_hash == outcome.theta_end_root
 
     # the uploaded bytes hash to the on-chain commitment
     from mok_core.determinism.hashing import hash_bytes
 
-    assert hash_bytes(loopback["payload_bytes"]) == commit.payload_hash
+    assert commit.binds_payload_hash(hash_bytes(loopback["payload_bytes"]))
     assert outcome.upload_key == keys.payload_key(WINDOW, UID, "1")
 
 

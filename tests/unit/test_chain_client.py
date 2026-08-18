@@ -15,12 +15,22 @@ from mok_core.config.schemas import BucketCreds, ChainConfig
 
 NETUID = 7
 
+HK = [
+    "5FmoaEjSmmyvVqXbDqJAhDFeJpao517beWxBieMroU6VrnXu",  # uid 0
+    "5EF8uRMaLNqsGMy1wGx1cceqJVcFBtqR8egmqTfDnvFuAW5Y",  # uid 1
+    "5DciMXcKCLk3yC98RR3wrDWWJunJVgboZmnQXvJpu9nqEQ2E",  # uid 2
+]
 CREDS = BucketCreds(
     account_id="0123456789abcdef0123456789abcdef",
-    bucket_name="mok-miner-7",
+    bucket_name=HK[2].lower(),   # v2: derived from the committing hotkey
     access_key_id="fedcba9876543210fedcba9876543210",
-    secret_access_key="s3cr3t-key-for-golden-vector-test-0000000000000000000000000000",
+    secret_access_key="00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
 )
+
+
+def creds_for(uid: int, **update: str) -> BucketCreds:
+    """CREDS as they decode for `uid` (bucket name = its hotkey lowercased)."""
+    return CREDS.model_copy(update={"bucket_name": HK[uid].lower(), **update})
 
 
 def window_commit(window: int, fill: str = "ab") -> WindowCommit:
@@ -34,12 +44,12 @@ def make_client(**kwargs: Any) -> tuple[ChainClient, MagicMock, MagicMock, Magic
     subtensor = MagicMock(name="subtensor")
     subtensor.metagraph.return_value = SimpleNamespace(
         uids=[0, 1, 2],
-        hotkeys=["hk0", "hk1", "hk2"],
+        hotkeys=list(HK),
         S=[10.0, 5.0, 0.5],
     )
     factory = MagicMock(name="subtensor_factory", return_value=subtensor)
     wallet = MagicMock(name="wallet")
-    wallet.hotkey.ss58_address = "hk0"
+    wallet.hotkey.ss58_address = HK[0]
     wallet.hotkey.sign.return_value = b"sig-bytes"
     client = ChainClient(
         cfg, wallet=wallet, subtensor_factory=factory, backoff_base_s=0.0, **kwargs
@@ -116,10 +126,10 @@ class TestRawCommitments:
             "info": {"fields": [[{"Raw12": (tuple(b"wire-for-hk0"),)}]]}
         }
         subtensor.substrate.query_map.return_value = [
-            ("hk0", SimpleNamespace(value=pallet_value)),
-            ("hk1", raw),                                     # plain-string value
+            (HK[0], SimpleNamespace(value=pallet_value)),
+            (HK[1], raw),                                     # plain-string value
             ("hk-unknown", "wire-for-stranger"),              # hotkey not in metagraph
-            ("hk2", SimpleNamespace(value={"info": "mangled"})),  # undecodable value
+            (HK[2], SimpleNamespace(value={"info": "mangled"})),  # undecodable value
         ]
         result = client.get_all_commitments()
         assert result == {0: "wire-for-hk0", 1: "wire-for-hk1"}
@@ -147,21 +157,23 @@ class TestTypedCommitments:
 
     def test_get_bucket_round_trip_and_garbage(self) -> None:
         client, subtensor, _, _ = make_client()
-        subtensor.get_commitment.return_value = BucketCommit(creds=CREDS).encode()
-        assert client.get_bucket(2) == CREDS
+        subtensor.substrate.query_map.return_value = []      # no history in this double
         subtensor.get_commitment.return_value = "garbage!!"
-        assert client.get_bucket(2) is None
-        subtensor.get_commitment.return_value = window_commit(5).encode()  # wrong kind
-        assert client.get_bucket(2) is None
+        assert client.get_bucket(2) is None                  # never seen a bucket -> None
+        subtensor.get_commitment.return_value = BucketCommit(creds=CREDS).encode()
+        assert client.get_bucket(2) == creds_for(2)
+        # The slot moving on to a WindowCommit does NOT lose the bucket (single-slot model).
+        subtensor.get_commitment.return_value = window_commit(5).encode()
+        assert client.get_bucket(2) == creds_for(2)
 
     def test_get_all_buckets_skips_non_bucket(self) -> None:
         client, subtensor, _, _ = make_client()
         subtensor.substrate.query_map.return_value = [
-            ("hk0", BucketCommit(creds=CREDS).encode()),
-            ("hk1", window_commit(4).encode()),
-            ("hk2", "total garbage"),
+            (HK[0], BucketCommit(creds=CREDS).encode()),
+            (HK[1], window_commit(4).encode()),
+            (HK[2], "total garbage"),
         ]
-        assert client.get_all_buckets() == {0: CREDS}
+        assert client.get_all_buckets() == {0: creds_for(0)}
 
     def test_ensure_bucket_committed(self) -> None:
         client, subtensor, _, _ = make_client()
@@ -169,10 +181,14 @@ class TestTypedCommitments:
         subtensor.get_commitment.return_value = wire
         assert client.ensure_bucket_committed(CREDS) is False
         subtensor.commit.assert_not_called()
-        subtensor.get_commitment.return_value = "something-else"
+        other = BucketCommit(creds=CREDS.model_copy(update={"access_key_id": "9" * 32})).encode()
+        subtensor.get_commitment.return_value = other      # rotated key -> re-commit
         assert client.ensure_bucket_committed(CREDS) is True
         subtensor.commit.assert_called_once()
         assert subtensor.commit.call_args.args[2] == wire
+        subtensor.get_commitment.return_value = window_commit(3).encode()   # role commitment
+        with pytest.raises(ChainError, match="non-bucket commitment"):
+            client.ensure_bucket_committed(CREDS)          # never clobbered
 
     def test_commit_and_get_window_commits_filtered(self) -> None:
         client, subtensor, wallet, _ = make_client()
@@ -187,14 +203,17 @@ class TestTypedCommitments:
         ]
         result = client.get_window_commits(5, uids=[0, 1, 2])
         assert set(result) == {0}
-        assert result[0] == window_commit(5, "aa")
+        want = window_commit(5, "aa")
+        got = result[0]
+        assert (got.window, got.state_root, got.theta_end_hash) == (want.window, want.state_root, want.theta_end_hash)
+        assert got.binds_payload_hash(want.payload_hash)   # 128-bit prefix bound on-chain
 
     def test_get_window_commits_scans_all_when_uids_none(self) -> None:
         client, subtensor, _, _ = make_client()
         subtensor.substrate.query_map.return_value = [
-            ("hk0", window_commit(9, "aa").encode()),
-            ("hk1", window_commit(9, "bb").encode()),
-            ("hk2", ManifestCommit(manifest_hash="0d" * 32).encode()),
+            (HK[0], window_commit(9, "aa").encode()),
+            (HK[1], window_commit(9, "bb").encode()),
+            (HK[2], ManifestCommit(manifest_hash="0d" * 32).encode()),
         ]
         result = client.get_window_commits(9)
         assert set(result) == {0, 1}
@@ -218,9 +237,9 @@ class TestTypedCommitments:
         subtensor.commit.assert_called_once_with(wallet, NETUID, vote.encode())
 
         subtensor.substrate.query_map.return_value = [
-            ("hk0", VoteCommit(kind="rollback", target=11, payload_hash="ee" * 32).encode()),
-            ("hk1", VoteCommit(kind="amendment", target=11, payload_hash="ee" * 32).encode()),
-            ("hk2", "garbage vote"),
+            (HK[0], VoteCommit(kind="rollback", target=11, payload_hash="ee" * 32).encode()),
+            (HK[1], VoteCommit(kind="amendment", target=11, payload_hash="ee" * 32).encode()),
+            (HK[2], "garbage vote"),
         ]
         assert set(client.get_votes()) == {0, 1}
         assert set(client.get_votes(kind="rollback")) == {0}
@@ -336,7 +355,7 @@ class TestMetagraphAccessors:
     def test_lists(self) -> None:
         client, _, _, _ = make_client()
         assert client.uids() == [0, 1, 2]
-        assert client.hotkeys() == ["hk0", "hk1", "hk2"]
+        assert client.hotkeys() == HK
         assert client.stakes() == {0: 10.0, 1: 5.0, 2: 0.5}
 
     def test_array_like_metagraph(self) -> None:
@@ -352,9 +371,9 @@ class TestMetagraphAccessors:
 
     def test_hotkey_lookups(self) -> None:
         client, _, _, _ = make_client()
-        assert client.hotkey_of(1) == "hk1"
+        assert client.hotkey_of(1) == HK[1]
         assert client.hotkey_of(99) is None
-        assert client.uid_of_hotkey("hk2") == 2
+        assert client.uid_of_hotkey(HK[2]) == 2
         assert client.uid_of_hotkey("nope") is None
         assert client.my_uid() == 0   # wallet hotkey is hk0
 
@@ -381,3 +400,153 @@ class TestSignatures:
         assert client.verify("hk9", b"data", b"bad") is False
         keypair.verify.side_effect = ValueError("malformed signature")
         assert client.verify("hk9", b"data", b"junk") is False
+
+
+# --------------------------------------------------------------------------- #
+# History-aware bucket discovery (single commitment slot per hotkey)
+# --------------------------------------------------------------------------- #
+
+
+class _SlotHistoryChain:
+    """Subtensor double modelling the ONE-slot-per-hotkey commitment pallet with
+    full history: `history[block] = {hotkey: wire}` snapshots; the live slot is
+    the newest snapshot. `get_block_hash(b)` returns f"0x{b}" and query_map
+    replays the snapshot at that block."""
+
+    def __init__(self, history: dict[int, dict[str, str]], head: int) -> None:
+        self.history = dict(history)
+        self.head = head
+        self.reads: list[int] = []
+        self.substrate = SimpleNamespace(
+            get_block_hash=lambda b: f"0x{b}",
+            query_map=self._query_map,
+        )
+
+    def _snapshot_at(self, block: int) -> dict[str, tuple[str, int]]:
+        """{hotkey: (wire, commit_block)} — per hotkey, the newest commit at or before `block`."""
+        state: dict[str, tuple[str, int]] = {}
+        for b in sorted(b for b in self.history if b <= block):
+            for hk, wire in self.history[b].items():
+                state[hk] = (wire, b)
+        return state
+
+    def _query_map(self, *, module: str, storage_function: str, params: list, block_hash: str | None):
+        block = self.head if block_hash is None else int(block_hash[2:])
+        self.reads.append(block)
+        return [
+            (hk, {"deposit": 0, "block": cb, "info": {"fields": [{"Raw": "0x" + wire.encode().hex()}]}})
+            for hk, (wire, cb) in self._snapshot_at(block).items()
+        ]
+
+    # ChainClient surface used by the discovery code
+    def metagraph(self, netuid: int):
+        return SimpleNamespace(uids=[0, 1, 2], hotkeys=list(HK), S=[10.0, 5.0, 0.5])
+
+    def get_commitment(self, netuid: int, uid: int):
+        entry = self._snapshot_at(self.head).get(HK[uid])
+        return None if entry is None else entry[0]
+
+    def get_current_block(self) -> int:
+        return self.head
+
+
+def _history_client(history: dict[int, dict[str, str]], head: int) -> tuple[ChainClient, _SlotHistoryChain]:
+    cfg = ChainConfig(network="test", netuid=NETUID, commit_retries=1)
+    chain = _SlotHistoryChain(history, head)
+    wallet = MagicMock(name="wallet")
+    wallet.hotkey.ss58_address = HK[0]
+    client = ChainClient(cfg, wallet=wallet, subtensor_factory=lambda: chain, backoff_base_s=0.0)
+    return client, chain
+
+
+class TestHistoryAwareBuckets:
+    def test_live_bucket_commit_is_used_directly(self) -> None:
+        client, chain = _history_client({100: {HK[1]: BucketCommit(creds=CREDS).encode()}}, head=500)
+        assert client.get_bucket(1) == creds_for(1)
+        assert chain.reads == []  # live slot answered; no history walk
+
+    def test_bucket_recovered_after_window_commits_overwrite_slot(self) -> None:
+        # Miner uid 1: onboarded its bucket at block 100, then WindowCommits every 50 blocks.
+        history = {100: {HK[1]: BucketCommit(creds=CREDS).encode()}}
+        for w, blk in enumerate(range(150, 500, 50)):
+            history[blk] = {HK[1]: window_commit(w).encode()}
+        client, chain = _history_client(history, head=500)
+        assert client.get_commitment(1).startswith("MOKW")   # live slot is a WindowCommit
+        assert client.get_bucket(1) == creds_for(1)                  # ...but the bucket is recovered
+        assert chain.reads, "history was consulted"
+        # Exact hops land on commit_block-1 of each occupant; the bucket is live at 149.
+        assert 149 in chain.reads and 500 > min(chain.reads) >= 100
+        # Cached: a second lookup does no further reads.
+        n = len(chain.reads)
+        assert client.get_bucket(1) == creds_for(1)
+        assert len(chain.reads) == n
+
+    def test_owner_bucket_survives_manifest_commit(self) -> None:
+        history = {
+            100: {HK[0]: BucketCommit(creds=CREDS).encode()},
+            200: {HK[0]: ManifestCommit(manifest_hash="cd" * 32).encode()},
+        }
+        client, _ = _history_client(history, head=300)
+        assert client.get_manifest_hash(0) == "cd" * 32   # live slot: manifest
+        assert client.get_bucket(0) == creds_for(0)               # history: bucket
+
+    def test_get_all_buckets_merges_live_and_recovered(self) -> None:
+        creds1 = creds_for(1, access_key_id="1" * 32)
+        creds2 = creds_for(2, access_key_id="2" * 32)
+        history = {
+            100: {HK[1]: BucketCommit(creds=creds1).encode(), HK[2]: BucketCommit(creds=creds2).encode()},
+            300: {HK[1]: window_commit(0).encode(), HK[2]: BucketCommit(creds=creds2).encode()},
+        }
+        client, _ = _history_client(history, head=400)
+        assert client.get_all_buckets() == {1: creds1, 2: creds2}   # uid 0 never onboarded -> absent
+
+    def test_never_onboarded_uid_is_absent_and_not_negatively_cached(self) -> None:
+        client, chain = _history_client({}, head=50)
+        client.bucket_lookback_blocks = 40
+        assert client.get_bucket(2) is None
+        # Later onboarding becomes visible (no negative cache).
+        chain.history[60] = {HK[2]: BucketCommit(creds=CREDS).encode()}
+        chain.head = 61
+        assert client.get_bucket(2) == creds_for(2)
+
+    def test_lookback_bound_is_respected(self) -> None:
+        # Bucket at 10, then a WindowCommit EVERY block up to head: reaching the
+        # bucket needs ~head hops, but the walk must stop at head-lookback.
+        history = {10: {HK[1]: BucketCommit(creds=CREDS).encode()}}
+        for blk in range(11, 5000):
+            history[blk] = {HK[1]: window_commit(blk % 7).encode()}
+        client, chain = _history_client(history, head=5000)
+        client.bucket_lookback_blocks = 1000
+        client.bucket_lookback_hops = 10_000
+        assert client.get_bucket(1) is None
+        assert min(chain.reads) >= 5000 - 1000 - 1     # never read below the floor
+        # Raising the lookback past block 10 finds it (no negative cache).
+        client.bucket_lookback_blocks = 6000
+        assert client.get_bucket(1) == creds_for(1)
+
+    def test_walk_is_exact_hops_not_strides(self) -> None:
+        # Bucket lived for ONE block before the first WindowCommit: a stride-based
+        # walk would skip it; exact commit-block hops must find it.
+        history = {100: {HK[1]: BucketCommit(creds=CREDS).encode()}}
+        for w, blk in enumerate(range(101, 2000, 7)):
+            history[blk] = {HK[1]: window_commit(w).encode()}
+        client, chain = _history_client(history, head=2000)
+        assert client.get_bucket(1) == creds_for(1)
+        assert 99 in chain.reads or 100 in chain.reads
+
+    def test_ensure_bucket_committed_refuses_to_clobber_role_commitment(self) -> None:
+        # uid 0 (our wallet) already holds a ManifestCommit: committing a bucket now would
+        # break history-aware discovery for every peer. Must raise, not overwrite.
+        history = {100: {HK[0]: ManifestCommit(manifest_hash="cd" * 32).encode()}}
+        client, chain = _history_client(history, head=200)
+        chain.set_commitment = MagicMock(name="set_commitment")
+        with pytest.raises(ChainError, match="non-bucket commitment"):
+            client.ensure_bucket_committed(CREDS)
+        chain.set_commitment.assert_not_called()
+
+    def test_ensure_bucket_committed_on_empty_slot_commits(self) -> None:
+        client, chain = _history_client({}, head=200)
+        chain.set_commitment = MagicMock(name="set_commitment")
+        assert client.ensure_bucket_committed(CREDS) is True
+        chain.set_commitment.assert_called_once()
+        assert chain.set_commitment.call_args.args[2] == BucketCommit(creds=CREDS).encode()

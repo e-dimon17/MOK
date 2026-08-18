@@ -655,7 +655,7 @@ async def catch_up(
         cert = await ex.get_certificate(storage, leader_bucket, w)
         for uid in cert.included_uids:
             commit = commits.get(uid)
-            if commit is not None and commit.payload_hash != cert.payload_hashes.get(uid):
+            if commit is not None and not commit.binds_payload_hash(cert.payload_hashes.get(uid, "")):
                 raise CatchUpError(
                     f"window {w}: certificate payload hash for uid {uid} contradicts chain commit"
                 )

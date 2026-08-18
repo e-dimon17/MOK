@@ -20,7 +20,7 @@ from typing import Any, Literal, Protocol
 from mok_core.config.schemas import BucketCreds, ChainConfig
 from mok_core.telemetry.logging import get_logger
 
-from .schemas import BucketCommit, ManifestCommit, VoteCommit, WindowCommit
+from .schemas import TAG_BUCKET, BucketCommit, ManifestCommit, VoteCommit, WindowCommit
 from .windows import window_of_block
 
 log = get_logger("chain.client")
@@ -82,6 +82,12 @@ class ChainClient:
     (`wallet`, `subtensor_factory`, `keypair_factory`) exist for tests and
     for sharing a subtensor across components."""
 
+    #: How far back get_bucket() searches commitment history for a peer's
+    #: onboarding BucketCommit (~4 weeks at 12 s/block).
+    bucket_lookback_blocks: int = 200_000
+    #: Cap on commit-to-commit hops per recovery (a miner makes one per window).
+    bucket_lookback_hops: int = 5_000
+
     def __init__(
         self,
         cfg: ChainConfig,
@@ -99,6 +105,8 @@ class ChainClient:
         self._subtensor: Any = None
         self._metagraph: Any = None
         self._block_cache: tuple[float, int] | None = None
+        # uid -> BucketCreds recovered from commitment HISTORY (see get_bucket).
+        self._bucket_cache: dict[int, BucketCreds] = {}
 
     # ------------------------------------------------------------------ #
     # Lazy handles (real SDK only when nothing was injected)
@@ -169,6 +177,11 @@ class ChainClient:
 
     def get_all_commitments(self, block: int | None = None) -> dict[int, str]:
         """All raw commitments keyed by uid, via one substrate query_map."""
+        return {uid: wire for uid, (wire, _blk) in self._commitments_with_blocks(block).items()}
+
+    def _commitments_with_blocks(self, block: int | None = None) -> dict[int, tuple[str, int | None]]:
+        """{uid: (wire, block_the_commit_landed_in)} at `block` (None = head). The
+        pallet records the commit block alongside each value; None when absent."""
         substrate = self.subtensor.substrate
         block_hash = None if block is None else substrate.get_block_hash(block)
         query_result = substrate.query_map(
@@ -182,7 +195,7 @@ class ChainClient:
             hk: int(uid)
             for hk, uid in zip(_as_list(mg.hotkeys), _as_list(mg.uids), strict=False)
         }
-        out: dict[int, str] = {}
+        out: dict[int, tuple[str, int | None]] = {}
         for key, value in query_result:
             hotkey = self._decode_account_id(key)
             commitment = self._decode_commitment_value(value)
@@ -191,8 +204,16 @@ class ChainClient:
             uid = hotkey_to_uid.get(hotkey)
             if uid is None:
                 continue
-            out[uid] = commitment
+            out[uid] = (commitment, self._decode_commitment_block(value))
         return out
+
+    @staticmethod
+    def _decode_commitment_block(value: Any) -> int | None:
+        raw = getattr(value, "value", value)
+        try:
+            return int(raw["block"])
+        except Exception:  # noqa: BLE001 — plain-string doubles carry no block
+            return None
 
     @staticmethod
     def _decode_account_id(key: Any) -> str | None:
@@ -237,24 +258,129 @@ class ChainClient:
     def commit_bucket(self, creds: BucketCreds) -> None:
         self.commit(BucketCommit(creds=creds).encode())
 
-    def get_bucket(self, uid: int) -> BucketCreds | None:
-        wire = self.get_commitment(uid)
-        if wire is None:
+    def _bucket_of(self, wire: str | None, uid: int) -> BucketCreds | None:
+        """Decode a BucketCommit for `uid`; its bucket name derives from the hotkey."""
+        if not wire or not wire.startswith(TAG_BUCKET):
+            return None
+        hotkey = self.hotkey_of(uid)
+        if hotkey is None:
             return None
         try:
-            return BucketCommit.decode(wire).creds
+            return BucketCommit.decode(wire, hotkey_ss58=hotkey).creds
         except ValueError:
             return None
 
+    def get_bucket(self, uid: int) -> BucketCreds | None:
+        """Bucket creds for `uid` — from the live slot, or from commitment HISTORY.
+
+        Each hotkey has ONE commitment slot, and roles overwrite it (miners with
+        per-window WindowCommits, the owner with the ManifestCommit, auditors with
+        their tag). Every participant commits its BucketCommit ONCE at onboarding,
+        BEFORE any other commitment, so the creds remain readable at earlier
+        blocks; this walks back through history until it finds them (bounded by
+        BUCKET_LOOKBACK_BLOCKS) and caches the answer. Trustless: chain data only.
+        """
+        live = self._bucket_of(self.get_commitment(uid), uid)
+        if live is not None:
+            self._bucket_cache[uid] = live
+            return live
+        cached = self._bucket_cache.get(uid)
+        if cached is not None:
+            return cached
+        found = self._recover_buckets_from_history({uid})
+        return found.get(uid)
+
     def get_all_buckets(self) -> dict[int, BucketCreds]:
-        """Bucket creds for every uid whose commitment parses; garbage skipped."""
+        """Bucket creds for every registered uid — live slots plus history-recovered
+        ones (see get_bucket). Uids that never onboarded a bucket are absent."""
         out: dict[int, BucketCreds] = {}
-        for uid, wire in self.get_all_commitments().items():
-            try:
-                out[uid] = BucketCommit.decode(wire).creds
-            except ValueError:
-                continue
+        wires = self.get_all_commitments()
+        for uid, wire in wires.items():
+            creds = self._bucket_of(wire, uid)
+            if creds is not None:
+                out[uid] = creds
+                self._bucket_cache[uid] = creds
+        missing = {uid for uid in self.uids() if uid not in out}
+        for uid in list(missing):
+            cached = self._bucket_cache.get(uid)
+            if cached is not None:
+                out[uid] = cached
+                missing.discard(uid)
+        if missing:
+            out.update(self._recover_buckets_from_history(missing))
         return out
+
+    def _recover_buckets_from_history(self, wanted: set[int]) -> dict[int, BucketCreds]:
+        """Find each wanted uid's onboarding BucketCommit in commitment history.
+
+        The pallet stores, with every commitment, the block it landed in. So the
+        state just before the current occupant is at ``commit_block - 1`` — an
+        EXACT hop to the previous commitment, never skipping one. We follow that
+        chain of overwrites backwards per uid until a BucketCommit appears
+        (cached forever), the run of history is exhausted, or the walk exceeds
+        BUCKET_LOOKBACK_BLOCKS / BUCKET_LOOKBACK_HOPS. Uids not found are absent,
+        never negatively cached (they may onboard later).
+
+        Cost: one query_map per hop, hops == commits since onboarding — but every
+        node needs this at most once per peer for the peer's lifetime.
+        """
+        found: dict[int, BucketCreds] = {}
+        remaining = set(wanted)
+        if not remaining:
+            return found
+        try:
+            head = self.current_block()
+            snapshot = self._commitments_with_blocks()
+        except Exception as e:  # noqa: BLE001 — history reads are best-effort
+            log.warning("history commitment read failed", error=str(e))
+            return found
+        floor = max(1, head - self.bucket_lookback_blocks)
+        # Per uid: the block at which the current occupant of its slot landed.
+        cursor: dict[int, int | None] = {}
+        for uid in list(remaining):
+            wire, blk = snapshot.get(uid, (None, None))
+            creds = self._bucket_of(wire, uid)
+            if creds is not None:
+                found[uid] = creds
+                self._bucket_cache[uid] = creds
+                remaining.discard(uid)
+            elif wire is None:
+                remaining.discard(uid)      # nothing ever committed: no history to walk
+            else:
+                cursor[uid] = blk if blk is not None else head
+        hops = 0
+        while remaining and hops < self.bucket_lookback_hops:
+            hops += 1
+            # Walk all uids that share the same "look at block X" in one read.
+            targets: dict[int, list[int]] = {}
+            for uid in list(remaining):
+                at = cursor.get(uid)
+                if at is None or at - 1 < floor:
+                    remaining.discard(uid)
+                    continue
+                targets.setdefault(at - 1, []).append(uid)
+            if not targets:
+                break
+            for block, uids in targets.items():
+                try:
+                    older = self._commitments_with_blocks(block=block)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("history commitment read failed", block=block, error=str(e))
+                    for uid in uids:
+                        remaining.discard(uid)
+                    continue
+                for uid in uids:
+                    wire, blk = older.get(uid, (None, None))
+                    creds = self._bucket_of(wire, uid)
+                    if creds is not None:
+                        found[uid] = creds
+                        self._bucket_cache[uid] = creds
+                        remaining.discard(uid)
+                    elif wire is None or blk is None or blk > block:
+                        remaining.discard(uid)  # start of history / inconsistent record
+                    else:
+                        cursor[uid] = blk       # next hop reads blk - 1 (strictly older)
+        return found
 
     def ensure_bucket_committed(self, creds: BucketCreds) -> bool:
         """Commit bucket creds unless the chain already holds them exactly.
@@ -264,6 +390,15 @@ class ChainClient:
         wire = BucketCommit(creds=creds).encode()
         if existing == wire:
             return False
+        if existing and self._bucket_of(existing, uid) is None:
+            # The slot already carries a role commitment (WindowCommit / Manifest /
+            # auditor tag). Overwriting it would silently desync the fleet — and a
+            # bucket committed AFTER other commitments is not what history-aware
+            # discovery expects. Bucket onboarding must come first.
+            raise ChainError(
+                f"uid {uid} commitment slot holds a non-bucket commitment ({existing[:8]!r}...); "
+                "commit the bucket BEFORE any other role commitment"
+            )
         self.commit(wire)
         return True
 

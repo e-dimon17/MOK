@@ -116,3 +116,55 @@ default macrobatch 131072 costs ~50 GB/GPU of saved context on top of the
 ~234 GB budget. Rule: budget Stage 3 with macrobatch 65536 first (context
 halves; backward replays more), and only raise it if measured headroom allows.
 Measure, don't estimate, at the Stage-3 calibration rehearsal.
+## First live-environment run (2 A100 servers, testnet netuid 534, 2026-08-18)
+
+Findings from the first time this codebase ran on CUDA, a real chain, and a real R2 bucket.
+Every item below reproduces identically on the B300 production stack.
+
+- **[cuda]** Six host-vs-tensor device bugs fixed: `sdpa_backend()` now device-aware (CPU tensors
+  on GPU hosts pinned cuDNN → "no viable backend"); MoE layer casts to master dtype at entry
+  (bf16 autocast hands it RMSNorm's fp32); Router runs under `autocast(enabled=False)` (the
+  fp32-router guard recommended above); `mok-attest`/onboard CLIs now call `enforce_determinism`
+  (torchrun entry did, CLI didn't → nondeterministic roots); `CpuSnapshot.take` pins only for
+  CUDA sources; `reference_step.main --device cpu` no longer calls `torch.cuda.set_device`.
+- **[cuda]** `cudnn_det` attention is VETOED by torch's determinism checker on A100 + torch
+  2.13/cu126 ("cuDNN SDPA is not deterministic"). `flash_det` is bitwise-deterministic there
+  (attest root for block_hash 0x01*32: `91033a0f14e3ed70654946da71be43b9dd79e497a33ffc51bb7faee4868df212`,
+  reproduced across two machines). Whether the blessed B300 container supports `cudnn_det` is
+  a `tests/gpu/test_03` question; the manifest must pin whichever the fleet resolves.
+- **[chain]** bittensor SDK: 9.x cannot SCALE-encode the current runtime; 11.x removed
+  `subtensor.metagraph`; 10.5 works — pinned in pyproject. `ChainClient` gained compat shims
+  (bt.Wallet/Subtensor casing, `commit`→`set_commitment`, hex-string commitment decode).
+  Testnet showed NO commitment rate limit (back-to-back commits OK, ~33 s each incl. finalization).
+- **[chain] DESIGN GAP — bucket discovery.** Each hotkey has ONE commitment slot; uid 0 must
+  hold `ManifestCommit` and miners rewrite theirs with `WindowCommit` every window, so
+  `get_bucket(uid)` cannot be relied on (original bootstrap hard-failed on uid 0 and lost miner
+  buckets after window 0). Interim: `MOK_STATIC_BUCKETS` JSON map (chain wins, static fills gaps;
+  reserved `"dataset"` key routes shard reads to a separate frozen dataset bucket). Proper fix is
+  a protocol change: a stable per-hotkey bucket record that survives per-window commits (size is
+  NOT the constraint — BucketCommit is 197 of 256 bytes even with the name field). Hotkey-derived
+  bucket names (`hotkey.lower()`, Templar-style) are a reasonable ergonomic part of that redesign
+  but do not by themselves solve the single-slot problem. Pre-mainnet item.
+- **[storage]** Shard fetch key was `shards/<hash16>.bin`; `mok-data upload` publishes
+  `datasets/<name>/shard-<hash16>.bin`. Fetcher now uses `dataset_shard_key()` matching the
+  uploader (content is hash-verified, so the layout is not consensus-bearing).
+- **[chain] WIRE v2 (SPEC_VERSION 2) — the pallet limit is 128 bytes, not 256.** The live
+  commitment pallet stores ONE field of `Raw0..Raw128` (SDK sends `Raw{len(data)}`); v1's
+  BucketCommit (197 B) and WindowCommit (210 B) were rejected on-chain (`'Raw197' not present in
+  type_mapping`) — no miner could ever have committed a window. v2: BucketCommit 92 B (creds as
+  raw bytes; **bucket name NOT on the wire — derived as `hotkey_ss58.lower()`, a valid R2 name**),
+  WindowCommit 120 B (window as 6 hex; `payload_hash` bound by its 128-bit prefix —
+  `WindowCommit.binds_payload_hash()`; the full hash still travels in the leader-signed
+  certificate and is verified in full on every fetch; state_root/theta_end_hash stay 256-bit).
+  Golden vectors re-pinned in test_chain_schemas.py. Verified LIVE on testnet netuid 534:
+  both wires committed; `get_window_commits` decodes; bucket recovered from history after the
+  WindowCommit overwrote the slot.
+- **[chain] Bucket discovery is chain-derived again (no static file needed).** `ChainClient.
+  get_bucket/get_all_buckets` walk commitment HISTORY: the pallet records each commit's block, so
+  `commit_block-1` is an exact hop to the previous occupant of the slot; walk until a BucketCommit
+  (cached; bounded by `bucket_lookback_blocks`/`_hops`; never negatively cached). Requires the
+  onboarding rule "commit the bucket BEFORE any other commitment" — `ensure_bucket_committed`
+  now REFUSES to overwrite a non-bucket slot. `MOK_STATIC_BUCKETS` demoted to an optional local
+  override (`"dataset"` key still routes shard reads to a separate frozen dataset bucket).
+  Operator impact: `R2_BUCKET_NAME` is optional (derived from the wallet hotkey; if set it must
+  match, `resolve_bucket_name`); create the R2 bucket named after the hotkey.

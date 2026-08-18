@@ -484,7 +484,7 @@ class ScriptedChain:
             raise RuntimeError("scripted chain has no uid to commit as")
         self.commitments[self._my_uid] = data
         try:
-            decoded: Commitment = decode_commitment(data)
+            decoded: Commitment = decode_commitment(data, hotkey_ss58=self.hotkey_of(self._my_uid))
         except ValueError:
             return
         if isinstance(decoded, WindowCommit):
@@ -816,7 +816,7 @@ class NodeContext:
         return bytes.fromhex(self.manifest.prf.run_seed_hex)
 
     def owner_bucket(self) -> BucketCreds:
-        bucket = self.chain.get_bucket(OWNER_UID) or self.static_buckets.get(OWNER_UID)
+        bucket = self.static_buckets.get(OWNER_UID) or self.chain.get_bucket(OWNER_UID)
         return bucket if bucket is not None else self.own_bucket
 
     def dataset_bucket(self) -> BucketCreds:
@@ -825,11 +825,10 @@ class NodeContext:
         return self.static_buckets.get(DATASET_BUCKET_UID) or self.owner_bucket()
 
     def peer_buckets(self) -> dict[int, BucketCreds]:
-        # Chain slots are single-valued: a miner's BucketCommit is overwritten by
-        # its per-window WindowCommit, so the static map (MOK_STATIC_BUCKETS)
-        # backfills peers whose slot currently holds a different commitment.
-        buckets = {uid: b for uid, b in self.static_buckets.items() if uid >= 0}
-        buckets.update(self.chain.get_all_buckets())
+        # get_all_buckets is history-aware (onboarding BucketCommits survive later
+        # per-window commits); MOK_STATIC_BUCKETS entries override per uid.
+        buckets = dict(self.chain.get_all_buckets())
+        buckets.update({uid: b for uid, b in self.static_buckets.items() if uid >= 0})
         buckets.setdefault(self.uid, self.own_bucket)
         return buckets
 
@@ -838,7 +837,7 @@ class NodeContext:
 
     def leader_bucket(self) -> BucketCreds:
         leader = self.leader_uid()
-        bucket = self.chain.get_bucket(leader) or self.static_buckets.get(leader)
+        bucket = self.static_buckets.get(leader) or self.chain.get_bucket(leader)
         return bucket if bucket is not None else self.own_bucket
 
     async def aclose(self) -> None:
@@ -1199,19 +1198,21 @@ async def bootstrap(
                 f"hotkey {cfg.chain.wallet_hotkey!r} is not registered on netuid {cfg.chain.netuid}"
             )
         uid = int(uid_maybe)
-        own_bucket = _bucket_from_env()
+        own_bucket = _bucket_from_env(chain.hotkey_of(uid) or "")
         storage = StorageClient(own_bucket, cfg.storage)
         await storage.__aenter__()
         manifest_hash = chain.get_manifest_hash(OWNER_UID)
         if manifest_hash is None:
             raise BootstrapError(f"no manifest committed by owner uid {OWNER_UID}")
-        # The owner's single commitment slot holds the ManifestCommit, so its
-        # bucket is normally resolvable only through the static map.
-        owner_bucket = chain.get_bucket(OWNER_UID) or static_buckets.get(OWNER_UID)
+        # ChainClient.get_bucket is history-aware: the owner committed its bucket
+        # at onboarding BEFORE the ManifestCommit, so it is recoverable from
+        # earlier blocks. MOK_STATIC_BUCKETS remains an optional local override.
+        owner_bucket = static_buckets.get(OWNER_UID) or chain.get_bucket(OWNER_UID)
         if owner_bucket is None:
             raise BootstrapError(
-                f"owner uid {OWNER_UID} has no committed bucket and no "
-                f"{STATIC_BUCKETS_ENV} entry"
+                f"owner uid {OWNER_UID} has no BucketCommit in commitment history "
+                f"(did the owner run mok-onboard before publishing?) and no "
+                f"{STATIC_BUCKETS_ENV} override"
             )
         manifest = await _fetch_manifest(storage, owner_bucket, manifest_hash)
         signer = ChainSigner(chain=chain, hotkey=chain.hotkey_of(uid) or "")
@@ -1282,9 +1283,9 @@ async def bootstrap(
     )
 
 
-#: Optional JSON file of {uid: BucketCreds fields} — read credentials for peers
-#: whose single chain commitment slot currently holds a non-bucket commitment
-#: (the owner's ManifestCommit, a miner's per-window WindowCommit).
+#: Optional JSON file of {uid: BucketCreds fields} — LOCAL OVERRIDE of chain-derived
+#: bucket discovery (e.g. offline rigs, or pointing at a mirror). Normal operation
+#: needs none: ChainClient.get_bucket recovers onboarding BucketCommits from history.
 STATIC_BUCKETS_ENV = "MOK_STATIC_BUCKETS"
 
 
@@ -1315,21 +1316,12 @@ def load_static_buckets(env: Mapping[str, str] | None = None) -> dict[int, Bucke
         raise BootstrapError(f"unreadable {STATIC_BUCKETS_ENV} file {path!r}: {e}") from e
 
 
-def _bucket_from_env() -> BucketCreds:
-    """This node's own R2 bucket from the step-B onboarding env (A/upload names)."""
-    wanted = {
-        "account_id": "R2_ACCOUNT_ID",
-        "bucket_name": "R2_BUCKET_NAME",
-        "access_key_id": "R2_WRITE_ACCESS_KEY_ID",
-        "secret_access_key": "R2_WRITE_SECRET_ACCESS_KEY",
-    }
-    values: dict[str, str] = {}
-    missing: list[str] = []
-    for field_name, env in wanted.items():
-        v = os.environ.get(env, "")
-        if not v:
-            missing.append(env)
-        values[field_name] = v
-    if missing:
-        raise BootstrapError(f"missing bucket credential env vars: {missing}")
-    return BucketCreds(**values)
+def _bucket_from_env(hotkey_ss58: str) -> BucketCreds:
+    """This node's own R2 bucket (WRITE pair) from the step-B onboarding env.
+    Wire v2: the bucket is named after the hotkey; R2_BUCKET_NAME, if set, must match."""
+    from B.onboarding.wallet_setup import OnboardingError, write_creds_from_env  # noqa: PLC0415
+
+    try:
+        return write_creds_from_env(hotkey_ss58)
+    except OnboardingError as e:
+        raise BootstrapError(str(e)) from e

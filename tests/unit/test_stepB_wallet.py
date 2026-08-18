@@ -15,15 +15,19 @@ from B.onboarding.wallet_setup import (
     commit_bucket_credentials,
     ensure_wallet,
     register,
+    resolve_bucket_name,
     write_creds_from_env,
 )
 from mok_core.config.schemas import BucketCreds, ChainConfig
 
 CFG = ChainConfig(network="test", netuid=11, wallet_name="w", wallet_hotkey="h")
 
+HOTKEY = "5DciMXcKCLk3yC98RR3wrDWWJunJVgboZmnQXvJpu9nqEQ2E"
 ENV = {
     "R2_ACCOUNT_ID": "acct",
-    "R2_BUCKET_NAME": "bucket",
+    # R2_BUCKET_NAME is optional under wire v2 (derived from the hotkey); tests set
+    # it to the derived value to exercise the match check.
+    "R2_BUCKET_NAME": HOTKEY.lower(),
     "R2_READ_ACCESS_KEY_ID": "read-key",
     "R2_READ_SECRET_ACCESS_KEY": "read-secret",
     "R2_WRITE_ACCESS_KEY_ID": "write-key",
@@ -129,31 +133,40 @@ def test_register_success_without_uid_raises() -> None:
 
 
 def test_bucket_creds_from_env_reads_the_read_pair() -> None:
-    creds = bucket_creds_from_env(ENV)
+    creds = bucket_creds_from_env(HOTKEY, ENV)
     assert creds == BucketCreds(
         account_id="acct",
-        bucket_name="bucket",
+        bucket_name=HOTKEY.lower(),          # wire v2: derived from the hotkey
         access_key_id="read-key",
         secret_access_key="read-secret",
     )
 
 
 def test_write_creds_from_env_reads_the_write_pair() -> None:
-    creds = write_creds_from_env(ENV)
+    creds = write_creds_from_env(HOTKEY, ENV)
     assert creds.access_key_id == "write-key"
     assert creds.secret_access_key == "write-secret"
+    assert creds.bucket_name == HOTKEY.lower()
+
+
+def test_bucket_name_optional_and_verified() -> None:
+    env = {k: v for k, v in ENV.items() if k != "R2_BUCKET_NAME"}
+    assert resolve_bucket_name(HOTKEY, env) == HOTKEY.lower()          # unset -> derived
+    assert bucket_creds_from_env(HOTKEY, env).bucket_name == HOTKEY.lower()
+    with pytest.raises(OnboardingError, match="R2_BUCKET_NAME"):
+        resolve_bucket_name(HOTKEY, {**env, "R2_BUCKET_NAME": "mok-miner"})   # mismatch -> refuse
 
 
 @pytest.mark.parametrize("missing", ["R2_ACCOUNT_ID", "R2_READ_SECRET_ACCESS_KEY"])
 def test_bucket_creds_missing_env_raises_naming_the_var(missing: str) -> None:
     env = {k: v for k, v in ENV.items() if k != missing}
     with pytest.raises(OnboardingError, match=missing):
-        bucket_creds_from_env(env)
+        bucket_creds_from_env(HOTKEY, env)
 
 
 def test_commit_bucket_credentials_delegates() -> None:
     chain = MagicMock()
     chain.ensure_bucket_committed.return_value = True
-    creds = bucket_creds_from_env(ENV)
+    creds = bucket_creds_from_env(HOTKEY, ENV)
     assert commit_bucket_credentials(chain, creds) is True
     chain.ensure_bucket_committed.assert_called_once_with(creds)

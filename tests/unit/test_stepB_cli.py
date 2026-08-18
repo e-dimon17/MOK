@@ -182,7 +182,7 @@ def test_onboard_flow_orchestration(cfg_yaml: Path, monkeypatch, capsys) -> None
     monkeypatch.setattr(cli, "_make_chain", fake_make_chain)
     monkeypatch.setattr(cli, "register", lambda c: (order.append("register"), 42)[1])
     creds = BucketCreds(account_id="a", bucket_name="b", access_key_id="k", secret_access_key="s")
-    monkeypatch.setattr(cli, "bucket_creds_from_env", lambda: creds)
+    monkeypatch.setattr(cli, "bucket_creds_from_env", lambda hotkey, env=None: creds)
     monkeypatch.setattr(
         cli, "commit_bucket_credentials", lambda c, cr: (order.append(f"bucket:{cr.bucket_name}"), True)[1]
     )

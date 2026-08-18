@@ -57,8 +57,8 @@ from B.onboarding.wallet_setup import (
 )
 from mok_core.config import RunConfig, load_run_config
 from mok_core.data import DatasetShardIndex
-from mok_core.determinism import enforce_determinism
 from mok_core.data.shards import shard_filename
+from mok_core.determinism import enforce_determinism
 from mok_core.model import MoKTransformer, init_model, reference_config
 
 __all__ = ["attest_main", "calibrate_main", "init_publish_main", "onboard_main"]
@@ -231,8 +231,9 @@ def onboard_main(argv: list[str] | None = None) -> int:
         step("bucket", skipped=True)
     else:
         chain = chain if chain is not None else _make_chain(cfg, wallet)
-        committed = commit_bucket_credentials(chain, bucket_creds_from_env())
-        step("bucket", ok=True, committed=committed)
+        creds = bucket_creds_from_env(chain.wallet.hotkey.ss58_address)
+        committed = commit_bucket_credentials(chain, creds)
+        step("bucket", ok=True, committed=committed, bucket_name=creds.bucket_name)
 
     if args.skip_init:
         step("init", skipped=True)
@@ -252,7 +253,8 @@ def onboard_main(argv: list[str] | None = None) -> int:
         async def _fetch() -> Any:
             from mok_core.storage import StorageClient  # noqa: PLC0415 — aioboto3 stays lazy
 
-            async with StorageClient(write_creds_from_env(), cfg.storage) as storage:
+            own = write_creds_from_env(chain.wallet.hotkey.ss58_address)
+            async with StorageClient(own, cfg.storage) as storage:
                 return await fetch_and_verify_init(
                     storage,
                     chain,
@@ -331,7 +333,8 @@ def init_publish_main(argv: list[str] | None = None) -> int:
         from mok_core.storage import StorageClient  # noqa: PLC0415 — aioboto3 stays lazy
 
         chain = _make_chain(cfg)
-        async with StorageClient(write_creds_from_env(), cfg.storage) as storage:
+        own = write_creds_from_env(chain.wallet.hotkey.ss58_address)
+        async with StorageClient(own, cfg.storage) as storage:
             return await build_and_publish_init(cfg, storage, chain, **common)
 
     root = asyncio.run(_go())

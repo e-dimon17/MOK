@@ -14,7 +14,7 @@ see `certificate_message` for the exact wire rule.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from mok_core.config import canonical_hash
 from mok_core.config.schemas import FrozenModel
@@ -34,6 +34,16 @@ VerifyFn = Callable[[bytes, bytes], bool]  # (message, signature) -> ok
 # so this order is documentation; the byte layout is fixed by canonical_bytes
 # (sorted-key compact JSON) and pinned by a golden-vector test.
 UNSIGNED_FIELDS = ("window", "included_uids", "payload_hashes", "theta_start_root", "leader_uid")
+
+
+def _commit_binds(commit: Any, full_hex64: str) -> bool:
+    """True iff `commit` vouches for `full_hex64`. Real WindowCommits (wire v2)
+    bind the first 128 bits of H(payload) on-chain; CommitLike doubles carrying a
+    full hash compare exactly."""
+    binds = getattr(commit, "binds_payload_hash", None)
+    if binds is not None:
+        return bool(binds(full_hex64))
+    return str(commit.payload_hash) == full_hex64
 
 
 @runtime_checkable
@@ -140,7 +150,7 @@ def verify_certificate(
         return False
     for uid in uids:
         commit = chain_commits.get(uid)
-        if commit is None or commit.payload_hash != cert.payload_hashes[uid]:
+        if commit is None or not _commit_binds(commit, cert.payload_hashes[uid]):
             return False
     try:
         sig = bytes.fromhex(cert.leader_sig)

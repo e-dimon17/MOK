@@ -62,7 +62,7 @@ from C.miner.bootstrap import (
 from mok_core.chain.schemas import WindowCommit
 from mok_core.chain.windows import boundary_block
 from mok_core.config.schemas import BucketCreds
-from mok_core.determinism import hash_named_tensors
+from mok_core.determinism import hash_bytes, hash_named_tensors
 from mok_core.model import build_reference_model, evaluate_sequences
 from mok_core.storage import StorageError, keys
 from mok_core.telemetry import get_logger
@@ -393,11 +393,17 @@ class ValidatorApp:
                 views[uid] = CommitView(uid=uid, payload_hash=commit.payload_hash, in_gate=False, valid=False)
                 continue
             valid = False
+            full_hash = commit.payload_hash
             try:
                 upload_ts[uid] = await ctx.storage.object_timestamp(bucket, key)
                 data = await ctx.storage.get_bytes(
-                    bucket, key, expected_hash=commit.payload_hash, max_bytes=cfg.storage.max_payload_bytes
+                    bucket, key, max_bytes=cfg.storage.max_payload_bytes
                 )
+                # The on-chain WindowCommit binds H(payload)'s 128-bit prefix; the full
+                # hash goes into the certificate so every peer fetches at full strength.
+                full_hash = hash_bytes(data)
+                if not commit.binds_payload_hash(full_hash):
+                    raise PayloadError("payload bytes do not match the on-chain commit")
                 payload = deserialize(data, max_bytes=cfg.storage.max_payload_bytes)
                 if payload.uid != uid or payload.window != window:
                     raise PayloadError("payload identity contradicts its commit")
@@ -418,7 +424,7 @@ class ValidatorApp:
                 log.warning("payload rejected", miner=uid, window=window, error=str(e))
                 self.ledger.invalid_payload(uid, window)
             views[uid] = CommitView(
-                uid=uid, payload_hash=commit.payload_hash, in_gate=True, valid=valid
+                uid=uid, payload_hash=full_hash if valid else commit.payload_hash, in_gate=True, valid=valid
             )
         return views, raw, payloads, upload_ts
 

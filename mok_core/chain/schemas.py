@@ -8,10 +8,26 @@ Wire strings are CONSENSUS CONSTANTS: every byte position is fixed per
 (tag, version). Golden-vector tests pin exact strings; any change requires
 a SPEC_VERSION bump. All encodings are pure ASCII, at most
 MAX_COMMITMENT_BYTES bytes.
+
+WIRE v2 (2026-08): the live subtensor commitment pallet accepts ONE field of
+at most 128 bytes (``Raw0..Raw128``; the SDK sends ``Raw{len(data)}``). v1's
+BucketCommit (197) and WindowCommit (210) could never be committed to a real
+chain. v2 fits everything in <=128 bytes:
+  * BucketCommit v2 — 92 B: prefix ‖ base64url(account_id ‖ access_key_id ‖
+    secret_access_key as RAW bytes, 64 B). The bucket name is NOT on the wire:
+    it is DERIVED as the committing hotkey's ss58 address lowercased
+    (`bucket_name_for_hotkey`), which is a valid S3/R2 bucket name.
+  * WindowCommit v2 — 120 B: prefix ‖ window(6 hex) ‖ base64url(payload_hash[:16])
+    ‖ base64url(state_root) ‖ base64url(theta_end_hash). The on-chain payload
+    hash binds its first 128 bits; the full 256-bit hash still travels in the
+    leader-signed certificate and is verified in full on every fetch. state_root
+    and theta_end_hash (the audit/catch-up bindings) stay full 256-bit.
+v1 codecs are retained for decoding archived data only.
 """
 
 from __future__ import annotations
 
+import base64
 import re
 from typing import ClassVar, Literal
 
@@ -19,8 +35,9 @@ from pydantic import model_validator
 
 from mok_core.config.schemas import BucketCreds, FrozenModel
 
-WIRE_VERSION = 1
-MAX_COMMITMENT_BYTES = 256
+WIRE_VERSION = 2
+#: Hard limit of the live commitment pallet (one Raw0..Raw128 field).
+MAX_COMMITMENT_BYTES = 128
 
 TAG_BUCKET = "MOKB"
 TAG_WINDOW = "MOKW"
@@ -101,56 +118,115 @@ def _finish(wire: str) -> str:
     return wire
 
 
+def _b64e(raw: bytes) -> str:
+    """base64url without padding — the v2 binary carrier (4 chars per 3 bytes)."""
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64d(text: str, nbytes: int, name: str) -> bytes:
+    if not text.isascii() or not re.fullmatch(r"[A-Za-z0-9_-]+", text):
+        raise ValueError(f"{name} is not base64url")
+    try:
+        raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"{name} is not base64url: {e}") from e
+    if len(raw) != nbytes:
+        raise ValueError(f"{name} decodes to {len(raw)} bytes, expected {nbytes}")
+    if _b64e(raw) != text:  # canonical form only (no alternate encodings of the same bytes)
+        raise ValueError(f"{name} is not canonical base64url")
+    return raw
+
+
+def _hex_bytes(value: str, nbytes: int, name: str) -> bytes:
+    if not re.fullmatch(rf"[0-9a-f]{{{2 * nbytes}}}", value):
+        raise ValueError(f"{name} must be {2 * nbytes} lowercase hex chars, got {value!r}")
+    return bytes.fromhex(value)
+
+
+_SS58_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{46,50}$")
+
+
+def bucket_name_for_hotkey(hotkey_ss58: str) -> str:
+    """The v2 convention: a participant's bucket is named after its hotkey,
+    lowercased (46-50 chars, [a-z0-9] — a valid S3/R2 bucket name). Peers derive
+    it from the metagraph, so it need not travel on the wire."""
+    if not _SS58_RE.fullmatch(hotkey_ss58):
+        raise ValueError(f"not an ss58 hotkey: {hotkey_ss58!r}")
+    return hotkey_ss58.lower()
+
+
+def _b64_len(nbytes: int) -> int:
+    return (4 * nbytes + 2) // 3
+
+
 # --------------------------------------------------------------------------- #
 # Wire objects
 # --------------------------------------------------------------------------- #
 
 
+_CREDS_RAW = 16 + 16 + 32                     # account_id ‖ access_key_id ‖ secret (raw)
+_CREDS_B64 = _b64_len(_CREDS_RAW)             # 86 chars
+
+
 class BucketCommit(FrozenModel):
-    """R2 read-credential commitment. Layout after the 6-char prefix:
-    account_id(32) ‖ bucket_name(63) ‖ access_key_id(32) ‖ secret_access_key(64) = 197 chars."""
+    """R2 read-credential commitment (v2, 92 chars):
+    prefix(6) ‖ base64url(account_id(16 B) ‖ access_key_id(16 B) ‖ secret_access_key(32 B)).
+
+    Cloudflare R2 credentials are hex (account 32, key 32, secret 64 hex chars);
+    they are packed as raw bytes. ``creds.bucket_name`` is NOT encoded — decode
+    fills it from the committing hotkey (`bucket_name_for_hotkey`)."""
 
     version: int = WIRE_VERSION
     creds: BucketCreds
 
-    WIRE_LEN: ClassVar[int] = 197
+    WIRE_LEN: ClassVar[int] = 6 + _CREDS_B64  # 92
 
     @model_validator(mode="after")
     def _check(self) -> BucketCommit:
         _check_version(self.version)
-        _pad(self.creds.account_id, _ACCOUNT_W, "account_id")
-        _pad(self.creds.bucket_name, _BUCKET_W, "bucket_name")
-        _pad(self.creds.access_key_id, _ACCESS_W, "access_key_id")
-        _pad(self.creds.secret_access_key, _SECRET_W, "secret_access_key")
+        _hex_bytes(self.creds.account_id, 16, "account_id")
+        _hex_bytes(self.creds.access_key_id, 16, "access_key_id")
+        _hex_bytes(self.creds.secret_access_key, 32, "secret_access_key")
+        if not self.creds.bucket_name:
+            raise ValueError("bucket_name must be set (derived from the hotkey)")
         return self
 
     def encode(self) -> str:
-        return _finish(
-            _prefix(TAG_BUCKET, self.version)
-            + _pad(self.creds.account_id, _ACCOUNT_W, "account_id")
-            + _pad(self.creds.bucket_name, _BUCKET_W, "bucket_name")
-            + _pad(self.creds.access_key_id, _ACCESS_W, "access_key_id")
-            + _pad(self.creds.secret_access_key, _SECRET_W, "secret_access_key")
+        raw = (
+            _hex_bytes(self.creds.account_id, 16, "account_id")
+            + _hex_bytes(self.creds.access_key_id, 16, "access_key_id")
+            + _hex_bytes(self.creds.secret_access_key, 32, "secret_access_key")
         )
+        return _finish(_prefix(TAG_BUCKET, self.version) + _b64e(raw))
 
     @classmethod
-    def decode(cls, wire: str) -> BucketCommit:
+    def decode(cls, wire: str, *, hotkey_ss58: str) -> BucketCommit:
+        """Decode; the bucket name is derived from `hotkey_ss58` (the committer)."""
         version, body = _split_prefix(wire, TAG_BUCKET, cls.WIRE_LEN)
-        a, b = _ACCOUNT_W, _ACCOUNT_W + _BUCKET_W
-        c = b + _ACCESS_W
+        raw = _b64d(body, _CREDS_RAW, "creds")
         creds = BucketCreds(
-            account_id=_unpad(body[:a], "account_id"),
-            bucket_name=_unpad(body[a:b], "bucket_name"),
-            access_key_id=_unpad(body[b:c], "access_key_id"),
-            secret_access_key=_unpad(body[c:], "secret_access_key"),
+            account_id=raw[:16].hex(),
+            bucket_name=bucket_name_for_hotkey(hotkey_ss58),
+            access_key_id=raw[16:32].hex(),
+            secret_access_key=raw[32:].hex(),
         )
         return cls(version=version, creds=creds)
 
 
+_WINDOW_HEX = 6                               # window < 16**6 = 16.7M windows
+_PAYLOAD_PREFIX_BYTES = 16                    # on-chain binding of H(payload): first 128 bits
+_HASH_B64 = _b64_len(32)                      # 43 chars
+_PPFX_B64 = _b64_len(_PAYLOAD_PREFIX_BYTES)   # 22 chars
+
+
 class WindowCommit(FrozenModel):
-    """Two-phase-commit phase 1: H(payload) ‖ state_root ‖ H(θ_end) pinned on-chain
-    before the payload bytes are uploaded. Layout after prefix:
-    window(12, zero-padded) ‖ payload_hash(64) ‖ state_root(64) ‖ theta_end_hash(64) = 210 chars."""
+    """Two-phase-commit phase 1 (v2, 120 chars): prefix(6) ‖ window(6 hex) ‖
+    base64url(payload_hash[:16]) ‖ base64url(state_root) ‖ base64url(theta_end_hash).
+
+    `payload_hash` may be given in full (64 hex) or as its 32-hex prefix; only the
+    first 16 bytes are bound on-chain (`payload_hash_prefix`). The full hash is
+    carried in the leader-signed WindowCertificate and verified on every fetch.
+    state_root and theta_end_hash — the catch-up and audit bindings — are full."""
 
     version: int = WIRE_VERSION
     window: int
@@ -158,37 +234,50 @@ class WindowCommit(FrozenModel):
     state_root: str
     theta_end_hash: str
 
-    WIRE_LEN: ClassVar[int] = 210
+    WIRE_LEN: ClassVar[int] = 6 + _WINDOW_HEX + _PPFX_B64 + 2 * _HASH_B64  # 120
 
     @model_validator(mode="after")
     def _check(self) -> WindowCommit:
         _check_version(self.version)
-        if not 0 <= self.window < 10**_WINDOW_W:
-            raise ValueError(f"window must be in [0, 10^{_WINDOW_W}), got {self.window}")
-        _check_hex64(self.payload_hash, "payload_hash")
+        if not 0 <= self.window < 16**_WINDOW_HEX:
+            raise ValueError(f"window must be in [0, 16^{_WINDOW_HEX}), got {self.window}")
+        if not re.fullmatch(r"[0-9a-f]{32}([0-9a-f]{32})?", self.payload_hash):
+            raise ValueError("payload_hash must be 32 or 64 lowercase hex chars")
         _check_hex64(self.state_root, "state_root")
         _check_hex64(self.theta_end_hash, "theta_end_hash")
         return self
 
+    @property
+    def payload_hash_prefix(self) -> str:
+        """The 32-hex-char (128-bit) prefix that is bound on-chain."""
+        return self.payload_hash[: 2 * _PAYLOAD_PREFIX_BYTES]
+
+    def binds_payload_hash(self, full_hex64: str) -> bool:
+        return full_hex64.lower().startswith(self.payload_hash_prefix)
+
     def encode(self) -> str:
         return _finish(
             _prefix(TAG_WINDOW, self.version)
-            + f"{self.window:0{_WINDOW_W}d}"
-            + self.payload_hash
-            + self.state_root
-            + self.theta_end_hash
+            + f"{self.window:0{_WINDOW_HEX}x}"
+            + _b64e(bytes.fromhex(self.payload_hash_prefix))
+            + _b64e(bytes.fromhex(self.state_root))
+            + _b64e(bytes.fromhex(self.theta_end_hash))
         )
 
     @classmethod
     def decode(cls, wire: str) -> WindowCommit:
         version, body = _split_prefix(wire, TAG_WINDOW, cls.WIRE_LEN)
-        w = _WINDOW_W
+        w = _WINDOW_HEX
+        if not re.fullmatch(rf"[0-9a-f]{{{w}}}", body[:w]):
+            raise ValueError(f"window must be {w} lowercase hex chars")
+        a = w + _PPFX_B64
+        b = a + _HASH_B64
         return cls(
             version=version,
-            window=_parse_uint(body[:w], "window"),
-            payload_hash=body[w : w + 64],
-            state_root=body[w + 64 : w + 128],
-            theta_end_hash=body[w + 128 :],
+            window=int(body[:w], 16),
+            payload_hash=_b64d(body[w:a], _PAYLOAD_PREFIX_BYTES, "payload_hash").hex(),
+            state_root=_b64d(body[a:b], 32, "state_root").hex(),
+            theta_end_hash=_b64d(body[b:], 32, "theta_end_hash").hex(),
         )
 
 
@@ -266,11 +355,18 @@ _DECODERS: dict[str, type[BucketCommit] | type[WindowCommit] | type[ManifestComm
 }
 
 
-def decode_commitment(wire: str) -> Commitment:
-    """Decode any MOK commitment string by its kind tag. Raises ValueError on garbage."""
+def decode_commitment(wire: str, *, hotkey_ss58: str | None = None) -> Commitment:
+    """Decode any MOK commitment string by its kind tag. Raises ValueError on garbage.
+    `hotkey_ss58` (the committer) is required to decode a BucketCommit — its bucket
+    name is derived from it."""
     if not isinstance(wire, str) or len(wire) < 6:
         raise ValueError("commitment too short")
-    decoder = _DECODERS.get(wire[:4])
+    tag = wire[:4]
+    if tag == TAG_BUCKET:
+        if hotkey_ss58 is None:
+            raise ValueError("decoding a BucketCommit requires the committer's hotkey")
+        return BucketCommit.decode(wire, hotkey_ss58=hotkey_ss58)
+    decoder = _DECODERS.get(tag)
     if decoder is None:
-        raise ValueError(f"unknown commitment tag {wire[:4]!r}")
+        raise ValueError(f"unknown commitment tag {tag!r}")
     return decoder.decode(wire)

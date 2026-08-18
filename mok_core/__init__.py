@@ -10,4 +10,4 @@ it — nodes on different spec versions refuse to interoperate.
 """
 
 __version__ = "0.1.0"
-SPEC_VERSION = 1
+SPEC_VERSION = 2  # wire v2: 128-byte pallet limit (BucketCommit 92, WindowCommit 120)

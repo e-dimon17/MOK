@@ -28,13 +28,15 @@ __all__ = [
     "commit_bucket_credentials",
     "ensure_wallet",
     "register",
+    "resolve_bucket_name",
     "write_creds_from_env",
 ]
 
 #: Environment variables holding the on-chain (read-only) bucket credentials.
+#: R2_BUCKET_NAME is OPTIONAL: wire v2 derives every participant's bucket name
+#: from its hotkey (`bucket_name_for_hotkey`); when set it must match.
 R2_ENV_VARS = (
     "R2_ACCOUNT_ID",
-    "R2_BUCKET_NAME",
     "R2_READ_ACCESS_KEY_ID",
     "R2_READ_SECRET_ACCESS_KEY",
 )
@@ -42,10 +44,26 @@ R2_ENV_VARS = (
 #: Environment variables holding this node's private write credentials.
 R2_WRITE_ENV_VARS = (
     "R2_ACCOUNT_ID",
-    "R2_BUCKET_NAME",
     "R2_WRITE_ACCESS_KEY_ID",
     "R2_WRITE_SECRET_ACCESS_KEY",
 )
+
+
+def resolve_bucket_name(hotkey_ss58: str, env: Mapping[str, str] | None = None) -> str:
+    """The node's bucket name: derived from its hotkey (wire v2 convention).
+    An explicit R2_BUCKET_NAME is accepted only if it matches — a mismatch would
+    publish credentials for a bucket peers can never locate."""
+    from mok_core.chain.schemas import bucket_name_for_hotkey  # noqa: PLC0415
+
+    env = env if env is not None else os.environ
+    derived = bucket_name_for_hotkey(hotkey_ss58)
+    given = env.get("R2_BUCKET_NAME", "")
+    if given and given != derived:
+        raise OnboardingError(
+            f"R2_BUCKET_NAME={given!r} but wire v2 requires this hotkey's bucket to be "
+            f"named {derived!r} (hotkey lowercased) — rename the bucket or unset R2_BUCKET_NAME"
+        )
+    return derived
 
 
 class OnboardingError(RuntimeError):
@@ -142,30 +160,31 @@ def register(chain: Any) -> int:
     return int(uid)
 
 
-def bucket_creds_from_env(env: Mapping[str, str] | None = None) -> BucketCreds:
-    """The on-chain READ credential pair from ``R2_*`` (see module docstring)."""
+def bucket_creds_from_env(hotkey_ss58: str, env: Mapping[str, str] | None = None) -> BucketCreds:
+    """The on-chain READ credential pair from ``R2_*`` (see module docstring);
+    the bucket name is derived from `hotkey_ss58` (`resolve_bucket_name`)."""
     env = env if env is not None else os.environ
     missing = [var for var in R2_ENV_VARS if not env.get(var)]
     if missing:
         raise OnboardingError(f"missing R2 credential env vars: {missing} (see .env.example)")
     return BucketCreds(
         account_id=env["R2_ACCOUNT_ID"],
-        bucket_name=env["R2_BUCKET_NAME"],
+        bucket_name=resolve_bucket_name(hotkey_ss58, env),
         access_key_id=env["R2_READ_ACCESS_KEY_ID"],
         secret_access_key=env["R2_READ_SECRET_ACCESS_KEY"],
     )
 
 
-def write_creds_from_env(env: Mapping[str, str] | None = None) -> BucketCreds:
+def write_creds_from_env(hotkey_ss58: str, env: Mapping[str, str] | None = None) -> BucketCreds:
     """This node's private WRITE pair (uploads via ``StorageClient``) — never
-    committed on-chain."""
+    committed on-chain. Bucket name derived from `hotkey_ss58`."""
     env = env if env is not None else os.environ
     missing = [var for var in R2_WRITE_ENV_VARS if not env.get(var)]
     if missing:
         raise OnboardingError(f"missing R2 credential env vars: {missing} (see .env.example)")
     return BucketCreds(
         account_id=env["R2_ACCOUNT_ID"],
-        bucket_name=env["R2_BUCKET_NAME"],
+        bucket_name=resolve_bucket_name(hotkey_ss58, env),
         access_key_id=env["R2_WRITE_ACCESS_KEY_ID"],
         secret_access_key=env["R2_WRITE_SECRET_ACCESS_KEY"],
     )

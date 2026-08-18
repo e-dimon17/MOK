@@ -368,8 +368,9 @@ def test_mini_session_two_phase_commits(mini_session: dict[str, Any]) -> None:
     for w, outcome in zip((0, 1), mini_session["outcomes"], strict=True):
         commit = chain.window_commits[w][UID]
         assert isinstance(commit, WindowCommit)
-        assert commit.payload_hash == outcome.payload_hash
-        assert hash_bytes(mini_session["payload_bytes"][w]) == commit.payload_hash
+        # Wire v2: the on-chain commit binds H(payload)'s 128-bit prefix.
+        assert commit.binds_payload_hash(outcome.payload_hash)
+        assert commit.binds_payload_hash(hash_bytes(mini_session["payload_bytes"][w]))
         assert commit.state_root == outcome.state_root_start
         assert commit.theta_end_hash == outcome.theta_end_root
 
@@ -798,3 +799,40 @@ def test_node_context_bucket_fallbacks_use_static_map() -> None:
     peers = ctx.peer_buckets()
     assert peers[0] == static[0] and peers[2] == static[2]
     assert peers[1] == BucketCreds(**_creds("validator"))   # chain wins where present
+
+
+def test_static_map_dataset_bucket_routes_shard_reads(tmp_path: Path) -> None:
+    """A separate frozen dataset bucket: shard reads use it, peer map never sees it."""
+    import json as _json
+    from unittest.mock import MagicMock
+
+    from C.miner.bootstrap import DATASET_BUCKET_UID, load_static_buckets
+
+    path = tmp_path / "buckets.json"
+    path.write_text(
+        _json.dumps({"0": _creds("owner"), "2": _creds("miner"), "dataset": _creds("data")}),
+        encoding="utf-8",
+    )
+    static = load_static_buckets(env={"MOK_STATIC_BUCKETS": str(path)})
+    assert set(static) == {0, 2, DATASET_BUCKET_UID}
+    assert static[DATASET_BUCKET_UID] == BucketCreds(**_creds("data"))
+
+    chain = MagicMock()
+    chain.get_bucket.return_value = None
+    chain.get_all_buckets.return_value = {}
+    ctx = NodeContext(
+        role="miner", cfg=MagicMock(), manifest=MagicMock(), uid=2,
+        signer=MagicMock(), chain=chain, storage=MagicMock(),
+        own_bucket=BucketCreds(**_creds("miner")),
+        shard_caches={}, shard_indexes={}, fetch_fns={}, metrics=MagicMock(),
+        comm=MagicMock(), clock=MagicMock(), rank=0, world_size=1,
+        protocol_world_size=1, device="cpu", state_dir=Path("."),
+        static_buckets=static,
+    )
+    assert ctx.dataset_bucket() == BucketCreds(**_creds("data"))     # shard reads
+    assert ctx.owner_bucket() == BucketCreds(**_creds("owner"))      # manifest reads
+    assert DATASET_BUCKET_UID not in ctx.peer_buckets()               # not a peer
+
+    # Without a "dataset" entry the owner bucket serves both roles (single-bucket layout).
+    ctx.static_buckets = {0: BucketCreds(**_creds("owner"))}
+    assert ctx.dataset_bucket() == ctx.owner_bucket()
