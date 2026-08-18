@@ -165,7 +165,8 @@ class ChainClient:
         raise ChainError(f"commit failed after {retries} attempts") from last
 
     def get_commitment(self, uid: int) -> str | None:
-        """Raw commitment string of `uid`, or None when absent/unreadable."""
+        """Raw commitment string of `uid`, or None when absent/unreadable.
+        (SDK >=10 prints a cosmetic ERROR line when the slot is empty — harmless.)"""
         try:
             value = self.subtensor.get_commitment(self.cfg.netuid, uid)
         except Exception as e:  # noqa: BLE001
