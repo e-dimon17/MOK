@@ -112,6 +112,8 @@ __all__ = [
     "build_outer_step",
     "catch_up_replica",
     "choose_backend",
+    "DATASET_BUCKET_KEY",
+    "DATASET_BUCKET_UID",
     "dataset_index_key",
     "dataset_shard_key",
     "load_master_state",
@@ -817,11 +819,16 @@ class NodeContext:
         bucket = self.chain.get_bucket(OWNER_UID) or self.static_buckets.get(OWNER_UID)
         return bucket if bucket is not None else self.own_bucket
 
+    def dataset_bucket(self) -> BucketCreds:
+        """Where shard trees are read from: the static map's ``"dataset"`` entry
+        when present, else the owner bucket (the default single-bucket layout)."""
+        return self.static_buckets.get(DATASET_BUCKET_UID) or self.owner_bucket()
+
     def peer_buckets(self) -> dict[int, BucketCreds]:
         # Chain slots are single-valued: a miner's BucketCommit is overwritten by
         # its per-window WindowCommit, so the static map (MOK_STATIC_BUCKETS)
         # backfills peers whose slot currently holds a different commitment.
-        buckets = dict(self.static_buckets)
+        buckets = {uid: b for uid, b in self.static_buckets.items() if uid >= 0}
         buckets.update(self.chain.get_all_buckets())
         buckets.setdefault(self.uid, self.own_bucket)
         return buckets
@@ -1232,7 +1239,7 @@ async def bootstrap(
         cfg,
         manifest,
         storage,
-        owner_bucket,
+        static_buckets.get(DATASET_BUCKET_UID) or owner_bucket,
         cache_dir=Path(cfg.data.shard_cache_dir).expanduser()
         if not local
         else state_dir / "shard-cache",
@@ -1281,14 +1288,29 @@ async def bootstrap(
 STATIC_BUCKETS_ENV = "MOK_STATIC_BUCKETS"
 
 
+#: Reserved key in the MOK_STATIC_BUCKETS file: the bucket holding the frozen
+#: step-A dataset trees when they live apart from the owner's operational bucket.
+DATASET_BUCKET_KEY = "dataset"
+#: Sentinel uid under which the dataset bucket is stored in the static map.
+DATASET_BUCKET_UID = -1
+
+
 def load_static_buckets(env: Mapping[str, str] | None = None) -> dict[int, BucketCreds]:
-    """Parse the MOK_STATIC_BUCKETS JSON file into {uid: BucketCreds}; {} if unset."""
+    """Parse the MOK_STATIC_BUCKETS JSON file into {uid: BucketCreds}; {} if unset.
+
+    Keys are uids; the reserved key ``"dataset"`` (stored as DATASET_BUCKET_UID)
+    names the bucket the shard trees are read from when it differs from uid 0's.
+    """
     path = (env if env is not None else os.environ).get(STATIC_BUCKETS_ENV, "")
     if not path:
         return {}
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        return {int(uid): BucketCreds(**creds) for uid, creds in raw.items()}
+        out: dict[int, BucketCreds] = {}
+        for key, creds in raw.items():
+            uid = DATASET_BUCKET_UID if key == DATASET_BUCKET_KEY else int(key)
+            out[uid] = BucketCreds(**creds)
+        return out
     except (OSError, ValueError, TypeError) as e:
         raise BootstrapError(f"unreadable {STATIC_BUCKETS_ENV} file {path!r}: {e}") from e
 
