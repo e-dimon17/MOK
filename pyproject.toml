@@ -11,7 +11,8 @@ requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 dependencies = [
     "torch>=2.10.0,<3",
-    "bittensor>=9.10.0",
+    # 9.x cannot SCALE-encode current chain runtimes; 11.x removed subtensor.metagraph.
+    "bittensor>=10.5,<11",
     "aioboto3>=13.2.0",
     "aiofiles>=24.1.0",
     "pydantic>=2.8",

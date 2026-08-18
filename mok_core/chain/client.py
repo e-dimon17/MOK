@@ -112,7 +112,9 @@ class ChainClient:
             else:
                 import bittensor as bt  # noqa: PLC0415 — heavy, lazy by design
 
-                self._subtensor = bt.subtensor(network=self.cfg.network)
+                # SDK >=10 dropped the lowercase aliases (bt.subtensor/bt.wallet).
+                subtensor_cls = getattr(bt, "subtensor", None) or bt.Subtensor
+                self._subtensor = subtensor_cls(network=self.cfg.network)
         return self._subtensor
 
     @property
@@ -120,7 +122,8 @@ class ChainClient:
         if self._wallet is None:
             import bittensor as bt  # noqa: PLC0415 — heavy, lazy by design
 
-            self._wallet = bt.wallet(name=self.cfg.wallet_name, hotkey=self.cfg.wallet_hotkey)
+            wallet_cls = getattr(bt, "wallet", None) or bt.Wallet
+            self._wallet = wallet_cls(name=self.cfg.wallet_name, hotkey=self.cfg.wallet_hotkey)
         return self._wallet
 
     @property
@@ -140,9 +143,11 @@ class ChainClient:
         """Commit `data` under our hotkey, retrying with exponential backoff."""
         retries = max(1, self.cfg.commit_retries)
         last: Exception | None = None
+        # SDK >=10 renamed commit() to set_commitment(); both take (wallet, netuid, data).
+        commit_fn = getattr(self.subtensor, "commit", None) or self.subtensor.set_commitment
         for attempt in range(retries):
             try:
-                self.subtensor.commit(self.wallet, self.cfg.netuid, data)
+                commit_fn(self.wallet, self.cfg.netuid, data)
                 return
             except Exception as e:  # noqa: BLE001 — SDK raises broadly
                 last = e
@@ -219,6 +224,8 @@ class ChainClient:
             inner = fields[next(iter(fields))]
             if isinstance(inner, tuple | list) and len(inner) == 1 and not isinstance(inner[0], int):
                 inner = inner[0]
+            if isinstance(inner, str):  # SDK >=10 delivers hex ('0x…') instead of bytes
+                return bytes.fromhex(inner.removeprefix("0x")).decode("utf-8")
             return bytes(inner).decode("utf-8")
         except Exception:  # noqa: BLE001
             return None
