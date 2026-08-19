@@ -43,7 +43,7 @@ from typing import Any
 
 import torch
 
-from C.core.checkpoint import CatchUpError, Checkpointer
+from C.core.checkpoint import CatchUpError, CertificatePendingError, Checkpointer
 from C.core.compress import unpack_12bit_indices
 from C.core.exchange import ExchangeError, gate_check, get_debug_slices
 from C.core.overlap import determine_offender, index_overlap_report, severity
@@ -245,8 +245,11 @@ class ValidatorApp:
                 self._log_waiting(head, gate_close)
                 await asyncio.sleep(self.poll_s)
                 continue
-            if target - self.window >= 3:
-                # far behind — catch up silently, then resume scoring at the head
+            if target - self.window >= 3 and not self.leader.is_leader():
+                # Far behind and NOT the leader: catch up silently, then resume
+                # scoring at the head. A leader must instead PROCESS its backlog
+                # window by window — it is the only party able to publish the
+                # certificates that catch-up (its own and everyone else's) waits on.
                 await self._catch_up_retrying(from_window=self.window - 1, to_window=target - 1)
                 self.window = target
                 continue
@@ -575,17 +578,32 @@ class ValidatorApp:
 
     async def _catch_up_retrying(self, *, from_window: int, to_window: int) -> None:
         last: Exception | None = None
-        for attempt in range(self.catchup_retries):
+        attempt = 0
+        while attempt < self.catchup_retries:
+            attempt += 1
             try:
                 await catch_up_replica(
                     self.ctx, self.model, self.outer_step, from_window=from_window, to_window=to_window
                 )
                 return
+            except CertificatePendingError as e:
+                attempt -= 1  # waiting on the leader is not a failed attempt
+                if self.leader.is_leader():
+                    # We ARE the leader: a pending certificate for a window we are
+                    # catching up over means we skipped our own publish duty — a
+                    # real bug to surface, not a wait condition.
+                    raise
+                last = e
+                log.warning(
+                    "leader has not certified the window yet — waiting",
+                    error=str(e),
+                )
+                await asyncio.sleep(max(self.catchup_retry_s, 5.0))
             except (CatchUpError, StorageError, ExchangeError, TimeoutError) as e:
                 last = e
                 log.warning(
                     "validator catch-up attempt failed",
-                    attempt=attempt + 1,
+                    attempt=attempt,
                     of=self.catchup_retries,
                     error=str(e),
                 )

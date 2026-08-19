@@ -258,7 +258,7 @@ class InnerLoop:
                     if grad is not None:
                         grad.mul_(clip_coef)
         return total_norm
-        
+
     def _all_reduce_loads(self, step_loads: list[torch.Tensor]) -> list[torch.Tensor]:
         """Sum the per-layer expert dispatch counts across the EP ranks.
 

@@ -558,6 +558,15 @@ class CatchUpError(RuntimeError):
         self.divergence = divergence
 
 
+class CertificatePendingError(CatchUpError):
+    """A window has on-chain commits but no leader certificate YET.
+
+    A liveness condition (leader down/lagging), not corruption: non-leader
+    nodes must WAIT and retry — the certificate is the only thing that can
+    define this window's outer step. Only the leader itself should treat this
+    as an error (it is the one that must publish)."""
+
+
 @dataclass(frozen=True)
 class CatchUpReport:
     applied_windows: tuple[int, ...]
@@ -659,9 +668,10 @@ async def catch_up(
             cert = await ex.get_certificate(storage, leader_bucket, w)
         except ObjectMissingError:
             if commits:
-                # Miners committed but the leader never certified — a real
-                # inconsistency the operator must see, not an empty window.
-                raise CatchUpError(
+                # Miners committed but the leader has not certified (yet):
+                # typically the leader is down or lagging. A WAIT condition for
+                # everyone except the leader itself — never data corruption.
+                raise CertificatePendingError(
                     f"window {w}: {len(commits)} on-chain commits but no leader certificate"
                 ) from None
             # EMPTY window: no commits, no certificate — e.g. pre-launch windows,

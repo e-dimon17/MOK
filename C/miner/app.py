@@ -36,7 +36,7 @@ import signal
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from C.core.checkpoint import CatchUpError, Checkpointer, CheckpointMeta
+from C.core.checkpoint import CatchUpError, CertificatePendingError, Checkpointer, CheckpointMeta
 from C.core.compress import ErrorFeedback
 from C.core.exchange import ExchangeError, put_debug_slices, put_telemetry
 from C.core.phase import resolve_phase
@@ -365,6 +365,16 @@ class MinerApp:
                     ctx, self.model, self.outer_step, from_window=from_window, to_window=to_window
                 )
                 done = True
+            except CertificatePendingError as e:
+                # Leader down/lagging: the certificate is the only source of this
+                # window's outer step — wait for it, however long it takes.
+                last = e
+                log.warning(
+                    "leader has not certified the window yet — waiting",
+                    attempt=attempt,
+                    error=str(e),
+                )
+                await asyncio.sleep(max(self.catchup_retry_s, 5.0))
             except (CatchUpError, StorageError, ExchangeError, TimeoutError) as e:
                 last = e if isinstance(e, CatchUpError) else CatchUpError(str(e))
                 now = ctx.clock.now()

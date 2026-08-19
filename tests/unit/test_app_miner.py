@@ -19,6 +19,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -836,3 +837,42 @@ def test_static_map_dataset_bucket_routes_shard_reads(tmp_path: Path) -> None:
     # Without a "dataset" entry the owner bucket serves both roles (single-bucket layout).
     ctx.static_buckets = {0: BucketCreds(**_creds("owner"))}
     assert ctx.dataset_bucket() == ctx.owner_bucket()
+
+
+def test_recover_waits_out_a_pending_certificate(monkeypatch, tmp_path: Path) -> None:
+    """A down/lagging leader must stall the miner, not crash it: pending-certificate
+    retries are unbounded (they do not consume the failure budget)."""
+    import C.miner.app as app_mod
+    from C.core.checkpoint import CertificatePendingError
+
+    calls = {"n": 0}
+
+    async def flaky_catch_up(ctx, model, outer, *, from_window, to_window):
+        calls["n"] += 1
+        if calls["n"] <= 7:                        # far beyond catchup_retries=2
+            raise CertificatePendingError("window 9: 2 on-chain commits but no leader certificate")
+
+    monkeypatch.setattr(app_mod, "catch_up_replica", flaky_catch_up)
+    clock = make_clock(now_ts=10_000.0)            # gates long closed
+    ctx = SimpleNamespace(
+        clock=clock,
+        cfg=make_app_cfg(),
+        manifest=None,
+        chain=None,
+        metrics=twr.RecordingMetrics(),
+        protocol_world_size=1,
+    )
+    app = app_mod.MinerApp.__new__(app_mod.MinerApp)   # bare instance: only _recover needs wiring
+    app.ctx = ctx
+    app.window = 9
+    app.catchup_retries = 2
+    app.catchup_retry_s = 0.01
+    app._stop = asyncio.Event()
+    app.model = SimpleNamespace(iter_master_params=lambda: iter([("w", torch.zeros(1))]))
+    app.outer_step = None
+    monkeypatch.setattr(
+        app_mod, "run_state_at", lambda *a, **k: RunState(10, 0, 0)
+    )
+    asyncio.run(app._recover(to_window=9))
+    assert calls["n"] == 8                          # 7 pending waits + the success
+    assert app.window == 10

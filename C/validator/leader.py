@@ -24,7 +24,7 @@ import torch
 
 from C.core.certificate import WindowCertificate, build_certificate
 from C.core.checkpoint import Checkpointer, CheckpointMeta
-from C.core.exchange import put_aggregator_object, put_certificate, put_debug_slices
+from C.core.exchange import get_certificate, put_aggregator_object, put_certificate, put_debug_slices
 from C.core.rollback import RollbackDecision, RollbackStateMachine, SpikeDetector
 from C.core.window_runner import RunState
 from C.miner.bootstrap import NodeContext, resolve_leader_uid
@@ -80,7 +80,22 @@ class LeaderDuties:
         scores: Mapping[int, float],
         theta_start_root: str,
     ) -> WindowCertificate:
-        """Build, sign and publish the certificate + the aggregator mirror."""
+        """Build, sign and publish the certificate + the aggregator mirror.
+
+        IMMUTABLE once published: if this window already has a certificate in
+        the leader bucket (e.g. this leader crashed after publishing and is
+        reprocessing the window), ADOPT it. Rebuilding from live chain slots
+        would fork consensus — window commits are transient (a miner's next
+        commit overwrites its slot), so a replayed window reads empty views and
+        a rebuilt certificate would clobber the one peers already applied."""
+        existing = await self._existing_certificate(window)
+        if existing is not None:
+            log.info(
+                "certificate already published — adopting",
+                window=window,
+                included=list(existing.included_uids),
+            )
+            return existing
         cfg = self.ctx.cfg
         cert = build_certificate(
             window,
@@ -97,6 +112,19 @@ class LeaderDuties:
         await put_aggregator_object(self.ctx.storage, window, mirror)
         log.info("certificate published", window=window, included=list(cert.included_uids))
         return cert
+
+    async def _existing_certificate(self, window: int) -> WindowCertificate | None:
+        from mok_core.storage import ObjectMissingError, StorageError  # noqa: PLC0415
+
+        try:
+            return await get_certificate(
+                self.ctx.storage, self.ctx.own_bucket, window, max_bytes=1 << 20
+            )
+        except ObjectMissingError:
+            return None
+        except (StorageError, ValueError) as e:  # unreadable = treat as absent, rebuild
+            log.warning("existing certificate unreadable — rebuilding", window=window, error=str(e))
+            return None
 
     # ------------------------------------------------------------------ #
     # Post-outer-step duties

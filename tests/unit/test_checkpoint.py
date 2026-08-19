@@ -672,3 +672,21 @@ async def test_catch_up_missing_certificate_with_commits_is_an_error(
                 params, outer, None, sc, net.chain(), _manifest(), net.cfg,
                 0, 1, leader_bucket=leader, max_bytes=MAX_BYTES,
             )
+
+
+async def test_pending_certificate_is_distinct_wait_condition(admin: Any, moto_endpoint: str):
+    """Commits-without-certificate raises CertificatePendingError (a subclass) so
+    apps can WAIT on a lagging leader instead of treating it as corruption."""
+    from C.core.checkpoint import CertificatePendingError
+
+    net = _Network(windows=[1])
+    leader = make_creds(fresh_bucket(admin, "cu-pend-leader"))   # no cert published
+    params = {n: t.clone() for n, t in net.init_params.items()}
+    outer = ReplicatedOuterStep(net.cfg.outer, {n: torch.Size(s) for n, s in ALL_SHAPES.items()})
+    own = make_creds(fresh_bucket(admin, "cu-pend-self"))
+    async with make_client(own, moto_endpoint) as sc:
+        with pytest.raises(CertificatePendingError):
+            await catch_up(
+                params, outer, None, sc, net.chain(), _manifest(), net.cfg,
+                0, 1, leader_bucket=leader, max_bytes=MAX_BYTES,
+            )
