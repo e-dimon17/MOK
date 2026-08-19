@@ -43,7 +43,8 @@ from typing import Any
 
 import torch
 
-from C.core.checkpoint import CatchUpError, Checkpointer, sparse_pairs_from_compressed
+from C.core.checkpoint import CatchUpError, Checkpointer
+from C.core.compress import unpack_12bit_indices
 from C.core.exchange import ExchangeError, gate_check, get_debug_slices
 from C.core.overlap import determine_offender, index_overlap_report, severity
 from C.core.payload import PayloadError, WindowPayload, deserialize, validate_structure
@@ -136,6 +137,20 @@ class ValidatorState:
         sm.activation_window = rb["activation_window"]
         sm._votes = {int(u): float(s) for u, s in rb["votes"].items()}  # noqa: SLF001
         return True
+
+
+def _per_chunk_indices(payload: WindowPayload) -> dict[str, torch.Tensor]:
+    """Canonical per-chunk top-k index tensors, (n_chunks, k), per compressed param.
+
+    This is the shape `overlap.index_overlap_report` is defined over. Never feed
+    it flat index lists: `_pair_overlap` treats the last dim as the chunk, and a
+    param-wide flat tensor makes the K×K comparison quadratic in the PARAM size
+    (a ~1 TiB allocation for a 1M-index embedding)."""
+    out: dict[str, torch.Tensor] = {}
+    for name, ct in payload.compressed.items():
+        k = max(1, ct.n_values // max(1, ct.n_chunks))
+        out[name] = unpack_12bit_indices(ct.idxs_packed, ct.n_values).reshape(ct.n_chunks, k)
+    return out
 
 
 class ValidatorApp:
@@ -494,13 +509,9 @@ class ValidatorApp:
     ) -> None:
         if len(payloads) < 2:
             return
-        peer_indices: dict[int, dict[str, torch.Tensor]] = {}
-        for uid, payload in payloads.items():
-            idxs: dict[str, torch.Tensor] = {}
-            for name, ct in payload.compressed.items():
-                flat, _vals = sparse_pairs_from_compressed(name, ct, self.compressor)
-                idxs[name] = flat
-            peer_indices[uid] = idxs
+        peer_indices: dict[int, dict[str, torch.Tensor]] = {
+            uid: _per_chunk_indices(payload) for uid, payload in payloads.items()
+        }
         report = index_overlap_report(peer_indices, self.ctx.cfg.scoring.overlap_threshold)
         for pair in report.pairs:
             sev = severity(pair.overlap)

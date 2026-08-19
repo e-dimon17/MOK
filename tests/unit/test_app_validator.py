@@ -360,3 +360,28 @@ def test_audit_ingest_bad_signature_breaks_quorum(admin: Any, moto_endpoint: str
     issued = asyncio.run(go())
     assert issued == []                       # one valid mismatch < quorum of 2
     assert ledger.apply(3, 1.0, 5) == 1.0
+
+
+def test_per_chunk_indices_shape_and_memory(template_model, index, data_dir):
+    """Overlap inputs must be canonical (n_chunks, k) — never param-flat lists,
+    whose K×K comparison would be quadratic in the param size (1 TiB at ~1M
+    indices; the window-85 validator crash)."""
+    from C.core.overlap import index_overlap_report
+    from C.validator.app import _per_chunk_indices
+
+    cfg = tam.make_app_cfg()
+    manifest = tam.make_app_manifest(index, template_model)
+    arts = {
+        uid: tam.run_peer_window(template_model, cfg, manifest, data_dir, uid=uid, window=0)
+        for uid in (2, 5)
+    }
+    peer_indices = {uid: _per_chunk_indices(a.payload) for uid, a in arts.items()}
+    for idxs in peer_indices.values():
+        for name, t in idxs.items():
+            assert t.dim() == 2, name                       # (n_chunks, k)
+            ct = arts[2].payload.compressed[name]
+            assert t.shape == (ct.n_chunks, ct.n_values // ct.n_chunks)
+            assert int(t.max()) < ct.chunk_elems            # chunk-local indices
+    # end-to-end through the real report on real payloads — must be cheap and finite
+    report = index_overlap_report(peer_indices, threshold=1.5)
+    assert report.pairs_checked == 1 and 0.0 <= report.mean_overlap <= 1.0

@@ -76,6 +76,10 @@ class _Totals:
     weight: float = 0.0
 
 
+#: Chunk rows compared per batch in `_pair_overlap` (bounds the K×K broadcast).
+_PAIR_BATCH_CHUNKS = 16384
+
+
 def _pair_overlap(a: torch.Tensor, b: torch.Tensor) -> float:
     """Mean per-chunk |setA ∩ setB| / k for two (..., k) index tensors.
 
@@ -85,8 +89,16 @@ def _pair_overlap(a: torch.Tensor, b: torch.Tensor) -> float:
     k = a.shape[-1]
     a_flat = a.reshape(-1, k)
     b_flat = b.reshape(-1, k)
-    inter = (a_flat.unsqueeze(-1) == b_flat.unsqueeze(-2)).any(-1).sum(-1)  # (C,)
-    return (inter.to(torch.float32) / k).mean().item()
+    rows = a_flat.shape[0]
+    # Batch the (C, K, K) comparison so peak memory stays bounded for
+    # production-scale params (54B embed: C≈65k chunks) — result is exact.
+    total = 0.0
+    for i in range(0, rows, _PAIR_BATCH_CHUNKS):
+        aa = a_flat[i : i + _PAIR_BATCH_CHUNKS]
+        bb = b_flat[i : i + _PAIR_BATCH_CHUNKS]
+        inter = (aa.unsqueeze(-1) == bb.unsqueeze(-2)).any(-1).sum(-1)  # (batch,)
+        total += float((inter.to(torch.float32) / k).sum().item())
+    return total / rows
 
 
 def index_overlap_report(

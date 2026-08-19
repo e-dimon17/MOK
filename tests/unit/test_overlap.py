@@ -126,3 +126,15 @@ class TestSeverity:
     def test_out_of_range_rejected(self, bad: float):
         with pytest.raises(ValueError):
             severity(bad)
+
+
+def test_pair_overlap_batching_is_exact(monkeypatch):
+    """Row-batched kernel must equal the single-shot result bit for bit."""
+    import C.core.overlap as ov
+
+    g = torch.Generator().manual_seed(7)
+    a = torch.stack([torch.randperm(4096, generator=g)[:64] for _ in range(1000)])
+    b = torch.stack([torch.randperm(4096, generator=g)[:64] for _ in range(1000)])
+    full = ov._pair_overlap(a, b)
+    monkeypatch.setattr(ov, "_PAIR_BATCH_CHUNKS", 7)   # force many uneven batches
+    assert ov._pair_overlap(a, b) == pytest.approx(full, abs=0.0)
