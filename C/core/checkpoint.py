@@ -48,7 +48,7 @@ from mok_core.chain.schemas import WindowCommit
 from mok_core.config.canonical import canonical_bytes
 from mok_core.config.manifest import RunManifest
 from mok_core.config.schemas import BucketCreds, RunConfig
-from mok_core.storage import KeyFormatError, StorageClient, StorageError, keys
+from mok_core.storage import KeyFormatError, ObjectMissingError, StorageClient, StorageError, keys
 from mok_core.telemetry import get_logger
 
 from . import exchange as _default_exchange
@@ -652,7 +652,24 @@ async def catch_up(
                 ),
             )
 
-        cert = await ex.get_certificate(storage, leader_bucket, w)
+        try:
+            cert = await ex.get_certificate(storage, leader_bucket, w)
+        except ObjectMissingError:
+            if commits:
+                # Miners committed but the leader never certified — a real
+                # inconsistency the operator must see, not an empty window.
+                raise CatchUpError(
+                    f"window {w}: {len(commits)} on-chain commits but no leader certificate"
+                ) from None
+            # EMPTY window: no commits, no certificate — e.g. pre-launch windows,
+            # fleet-wide downtime, or no eligible miners. The certified set is
+            # empty, so the outer step is the identity: θ is unchanged. (The live
+            # runner asserts the same: an empty certified set leaves state
+            # bitwise unchanged.)
+            if w not in unverified:
+                unverified.append(w)
+            log.info("empty window — no commits, no certificate; θ unchanged", window=w)
+            continue
         for uid in cert.included_uids:
             commit = commits.get(uid)
             if commit is not None and not commit.binds_payload_hash(cert.payload_hashes.get(uid, "")):

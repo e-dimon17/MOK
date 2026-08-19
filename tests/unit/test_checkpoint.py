@@ -632,3 +632,43 @@ async def test_catch_up_missing_certified_payload_is_fatal(admin: Any, moto_endp
                 params, outer, None, sc, net.chain(), _manifest(), net.cfg, 0, 1,
                 leader_bucket=leader, max_bytes=MAX_BYTES,
             )
+
+
+async def test_catch_up_skips_empty_windows_as_identity(admin: Any, moto_endpoint: str):
+    """Windows with NO commits and NO certificate (pre-launch idle, fleet downtime)
+    are the identity outer step: θ unchanged, window recorded as unverified."""
+    net = _Network(windows=[3])                      # only window 3 was ever mined
+    leader = make_creds(fresh_bucket(admin, "cu-empty-leader"))
+    net.publish(admin, leader)
+
+    params = {n: t.clone() for n, t in net.init_params.items()}
+    outer = ReplicatedOuterStep(net.cfg.outer, {n: torch.Size(s) for n, s in ALL_SHAPES.items()})
+    own = make_creds(fresh_bucket(admin, "cu-empty-self"))
+    async with make_client(own, moto_endpoint) as sc:
+        report = await catch_up(
+            params, outer, None, sc, net.chain(), _manifest(), net.cfg,
+            0, 3, leader_bucket=leader, max_bytes=MAX_BYTES,
+        )
+
+    assert report.applied_windows == (3,)
+    assert report.unverified_windows == (1, 2)       # empty → identity, unverified
+    assert report.final_root == state_root(net.params.items())   # still bitwise lockstep
+
+
+async def test_catch_up_missing_certificate_with_commits_is_an_error(
+    admin: Any, moto_endpoint: str
+):
+    """Commits on-chain but no leader certificate is a REAL inconsistency."""
+    net = _Network(windows=[1])
+    leader = make_creds(fresh_bucket(admin, "cu-nocert-leader"))
+    # publish nothing: certificate for window 1 deliberately absent
+
+    params = {n: t.clone() for n, t in net.init_params.items()}
+    outer = ReplicatedOuterStep(net.cfg.outer, {n: torch.Size(s) for n, s in ALL_SHAPES.items()})
+    own = make_creds(fresh_bucket(admin, "cu-nocert-self"))
+    async with make_client(own, moto_endpoint) as sc:
+        with pytest.raises(CatchUpError, match="no leader certificate"):
+            await catch_up(
+                params, outer, None, sc, net.chain(), _manifest(), net.cfg,
+                0, 1, leader_bucket=leader, max_bytes=MAX_BYTES,
+            )
