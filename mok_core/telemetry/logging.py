@@ -126,6 +126,13 @@ def setup_logging(level: str = "INFO", *, stream=None, fmt: str | None = None) -
     if not root.handlers:
         root.addHandler(_make_handler(stream, fmt))
     _ARMED.update(level=root.level, handler=root.handlers[0])
+    # Quiet known-noisy third-party loggers that bypass sensible defaults: the
+    # substrate websocket's keepalive thread logs a full traceback (via the
+    # last-resort stderr handler) every time an idle RPC connection is culled
+    # by the endpoint's load balancer — routine, auto-reconnected, and already
+    # surfaced meaningfully by ChainClient's read retries when it matters.
+    for noisy in ("websockets", "websockets.client", "websockets.sync"):
+        logging.getLogger(noisy).setLevel(logging.CRITICAL)
     return root
 
 
