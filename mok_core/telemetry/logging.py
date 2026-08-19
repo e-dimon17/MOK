@@ -80,21 +80,52 @@ def _pick_format(stream: Any) -> str:
     return "console" if getattr(stream, "isatty", lambda: False)() else "json"
 
 
+# The configuration last applied by setup_logging(): (level, handler). Kept so
+# the 'mok' logger can be RE-ARMED if a third party strips it (see _ensure_armed).
+_ARMED: dict[str, Any] = {}
+
+
+def _make_handler(stream: Any, fmt: str | None) -> logging.Handler:
+    out = stream or sys.stderr
+    handler = logging.StreamHandler(out)
+    chosen = fmt or _pick_format(out)
+    handler.setFormatter(ConsoleFormatter() if chosen == "console" else JsonFormatter())
+    return handler
+
+
+def _ensure_armed() -> None:
+    """Restore the 'mok' logger's handler/level if something stripped them."""
+    if not _ARMED:
+        return
+    root = logging.getLogger("mok")
+    handler = _ARMED["handler"]
+    if handler not in root.handlers:
+        root.addHandler(handler)
+    if root.level != _ARMED["level"]:
+        root.setLevel(_ARMED["level"])
+    if root.disabled:
+        root.disabled = False
+
+
 def setup_logging(level: str = "INFO", *, stream=None, fmt: str | None = None) -> logging.Logger:
     """Configure the 'mok' logger once. Format: `fmt`, else $MOK_LOG_FORMAT, else
     console when stderr is a TTY (operators) and JSON otherwise (log shippers).
-    $MOK_LOG_LEVEL overrides `level`."""
+    $MOK_LOG_LEVEL overrides `level`.
+
+    Robust against the bittensor SDK: its LoggingMachine, on import, REMOVES every
+    handler from every logger it does not own and sets them to CRITICAL (its
+    ``enable_third_party_loggers=False`` default). We do not register with it
+    (that attaches its own colored handler and duplicates every line); instead
+    FieldLogger re-arms the 'mok' handler/level on every emit (see _ensure_armed)."""
     import os  # noqa: PLC0415
 
     root = logging.getLogger("mok")
-    root.setLevel(os.environ.get(LOG_LEVEL_ENV, level).upper())
+    lvl = logging.getLevelName(os.environ.get(LOG_LEVEL_ENV, level).upper())
+    root.setLevel(lvl)
     root.propagate = False
     if not root.handlers:
-        out = stream or sys.stderr
-        handler = logging.StreamHandler(out)
-        chosen = fmt or _pick_format(out)
-        handler.setFormatter(ConsoleFormatter() if chosen == "console" else JsonFormatter())
-        root.addHandler(handler)
+        root.addHandler(_make_handler(stream, fmt))
+    _ARMED.update(level=root.level, handler=root.handlers[0])
     return root
 
 
@@ -109,6 +140,11 @@ class FieldLogger:
         self._logger = logger
 
     def _log(self, level: int, msg: str, fields: dict[str, Any], exc_info: bool = False) -> None:
+        _ensure_armed()
+        if self._logger.disabled:            # bittensor's reset also disables loggers
+            self._logger.disabled = False
+        if self._logger.level and self._logger.level > logging.getLogger("mok").level:
+            self._logger.setLevel(logging.NOTSET)  # inherit from 'mok' again
         self._logger.log(level, msg, extra={"fields": fields}, exc_info=exc_info)
 
     def debug(self, msg: str, **fields: Any) -> None:

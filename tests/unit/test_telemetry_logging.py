@@ -12,6 +12,7 @@ from mok_core.telemetry.logging import (
     ConsoleFormatter,
     JsonFormatter,
     bind,
+    get_logger,
     setup_logging,
 )
 
@@ -87,3 +88,23 @@ def test_log_level_env_overrides_config(monkeypatch) -> None:
     monkeypatch.setenv(LOG_LEVEL_ENV, "WARNING")
     root = _isolated_setup(monkeypatch, "INFO", io.StringIO())   # config INFO, env WARNING
     assert root.level == logging.WARNING
+
+
+def test_survives_third_party_logger_reset(monkeypatch) -> None:
+    """The bittensor SDK strips every non-primary logger's handlers and sets them
+    to CRITICAL on import. Our loggers must keep emitting afterwards."""
+    stream = io.StringIO()
+    root = _isolated_setup(monkeypatch, "INFO", stream)
+    lg = get_logger("app.miner")
+    lg.info("before reset")
+    # Simulate LoggingMachine.disable_third_party_loggers + before_enable_default:
+    for name in ("mok", "mok.app.miner"):
+        lgr = logging.getLogger(name)
+        for h in list(lgr.handlers):
+            lgr.removeHandler(h)
+        lgr.setLevel(logging.CRITICAL)
+    assert root.handlers == [] and root.level == logging.CRITICAL
+    lg.info("after reset")                        # must re-arm and print
+    out = stream.getvalue()
+    assert "before reset" in out and "after reset" in out
+    assert out.count("after reset") == 1          # single handler, no duplicates
