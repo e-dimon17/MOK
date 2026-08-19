@@ -206,6 +206,9 @@ class MinerApp:
                 head = await asyncio.to_thread(ctx.chain.current_window, ctx.manifest)
                 await self._recover(to_window=max(self.window, head - 1))
                 self.completed_windows += 1
+                if self.warmup_left > 0:
+                    self.warmup_left -= 1
+                    log.info("warmup window served (via catch-up)", warmup_left=self.warmup_left)
             else:
                 if outcome.late_upload:
                     log.warning("late upload — payload skipped this window", window=self.window)
@@ -243,6 +246,7 @@ class MinerApp:
             outer_step=self.outer_step,
             checkpointer=self.checkpointer if ctx.rank == 0 else None,
             metrics=ctx.metrics if ctx.rank == 0 else None,
+            wait_for_gate=not ctx.local,
             clock=self.gate_clock,
             peer_buckets=lambda _w: self._buckets,
             leader_bucket=lambda _w: self._leader_creds,

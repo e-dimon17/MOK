@@ -40,6 +40,7 @@ the chain client is only touched through `exchange.put_window_payload`.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -557,6 +558,7 @@ class WindowRunner:
         payload_version: int = 1,
         device: str | torch.device = "cpu",
         self_leader: bool = False,
+        wait_for_gate: bool = True,
         sign_fn: SignFn | None = None,
         cert_poll_s: float = 2.0,
         cert_timeout_s: float = 180.0,
@@ -585,6 +587,7 @@ class WindowRunner:
         self.payload_version = int(payload_version)
         self.device = torch.device(device)
         self.self_leader = bool(self_leader)
+        self.wait_for_gate = bool(wait_for_gate)
         self.sign_fn: SignFn = sign_fn if sign_fn is not None else (lambda _msg: b"")
         self.cert_poll_s = float(cert_poll_s)
         self.cert_timeout_s = float(cert_timeout_s)
@@ -815,6 +818,23 @@ class WindowRunner:
         late = False
         receipt: UploadReceipt | None = None
         assert artifacts.payload is not None
+        # The upload gate for window W is [boundary(W+1), boundary(W+1)+grace):
+        # a payload uploaded BEFORE the boundary is rejected by validators as
+        # not-in-gate. When training finishes early (fast hardware, toy
+        # geometries), wait for the gate to open. (Warmup's force_late clock
+        # reads now()=inf, which skips this wait and lands in the late branch.)
+        gate_open = self.clock.boundary_ts(window + 1)
+        if self.wait_for_gate:
+            waited = False
+            while not (now := self.clock.now()) >= gate_open:
+                if not waited:
+                    log.info(
+                        "waiting for upload gate to open",
+                        window=window,
+                        opens_in_s=round(gate_open - now, 1),
+                    )
+                    waited = True
+                await asyncio.sleep(min(self.cert_poll_s, max(0.05, gate_open - now)))
         gate_left = self._gate_deadline(window) - self.clock.now()
         if gate_left <= 0:
             late = True
@@ -867,18 +887,24 @@ class WindowRunner:
             "cert": None,
             "gather": None,
         }
+        # The leader can only certify after the gate CLOSES; budget the wait
+        # from the clock geometry, with cert_timeout_s as the post-close allowance.
+        now = self.clock.now()
+        deadline = self._gate_deadline(window)
+        until_close = deadline - now if math.isfinite(deadline - now) else 0.0
+        cert_wait = max(self.cert_timeout_s, until_close + self.cert_timeout_s)
         log.info(
             "awaiting leader certificate",
             window=window,
             leader_bucket=self.leader_bucket(window).bucket_name,
-            timeout_s=self.cert_timeout_s,
+            timeout_s=round(cert_wait, 1),
         )
         t0 = time.monotonic()
         cert = await await_certificate(
             self.storage,
             self.leader_bucket(window),
             window,
-            timeout_s=self.cert_timeout_s,
+            timeout_s=cert_wait,
             poll_s=self.cert_poll_s,
         )
         if cert is None:

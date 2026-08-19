@@ -323,6 +323,7 @@ def make_runner(
         uid=UID,
         rank=0,
         world_size=1,
+        wait_for_gate=False,   # FakeClock is static; gate timing is tested explicitly
         comm=SingleNodeComm(),
         storage=storage,
         chain=chain,
@@ -740,3 +741,42 @@ def _plan_for(model: MoKTransformer, manifest: RunManifest, phase) -> Any:
     return build_window_plan(
         manifest, phase, run_seed=RUN_SEED, uid=UID, window=WINDOW, rank=0, world_size=1
     )
+
+
+class _AdvancingClock:
+    """boundary_ts like FakeClock, but now() advances by `step` per call —
+    lets the gate-open wait loop make progress without real sleeping."""
+
+    def __init__(self, start: float, step: float = 40.0) -> None:
+        self.now_ts = float(start)
+        self.step = float(step)
+
+    def boundary_ts(self, window: int) -> float:
+        return 1000.0 * window
+
+    def now(self) -> float:
+        self.now_ts += self.step
+        return self.now_ts
+
+
+async def test_runner_waits_for_gate_open_before_upload(
+    template_model, manifest, index, data_dir, admin, moto_endpoint, tmp_path
+):
+    """Training that finishes before boundary(W+1) must NOT upload early — the
+    payload would fail validators' in-gate check. The runner waits for the gate."""
+    creds = fresh_bucket(admin, "gatewait")
+    chain = MagicMock()
+    chain.commit_window = MagicMock()
+    clock = _AdvancingClock(start=10.0)          # window 0: gate opens at 1000
+    model = copy.deepcopy(template_model)
+    async with StorageClient(
+        creds, make_run_cfg().storage, endpoint_override=moto_endpoint, retry_base_delay_s=0.01
+    ) as sc:
+        runner = make_runner(model, manifest, index, data_dir, sc, creds, chain, clock, tmp_path)
+        runner.wait_for_gate = True              # the behavior under test
+        runner.cert_poll_s = 0.01
+        outcome = await runner.run_window(0, RunState(0, 0, 0))
+    assert not outcome.desync and not outcome.late_upload
+    # phase-1 chain commit happened, and only after the gate opened
+    assert chain.commit_window.called
+    assert clock.now_ts >= 1000.0                # the wait actually advanced past the boundary
