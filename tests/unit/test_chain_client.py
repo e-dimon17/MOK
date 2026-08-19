@@ -550,3 +550,25 @@ class TestHistoryAwareBuckets:
         assert client.ensure_bucket_committed(CREDS) is True
         chain.set_commitment.assert_called_once()
         assert chain.set_commitment.call_args.args[2] == BucketCommit(creds=CREDS).encode()
+
+
+class TestReadRetry:
+    def test_transient_query_map_failure_is_retried(self) -> None:
+        client, subtensor, _, _ = make_client()
+        calls = {"n": 0}
+
+        def flaky(**kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("UnknownBlock: Header was not found in the database")
+            return []
+
+        subtensor.substrate.query_map.side_effect = flaky
+        assert client.get_all_commitments() == {}     # survives the blip
+        assert calls["n"] == 2
+
+    def test_persistent_read_failure_raises_chain_error(self) -> None:
+        client, subtensor, _, _ = make_client()
+        subtensor.substrate.query_map.side_effect = RuntimeError("down")
+        with pytest.raises(ChainError, match="failed after"):
+            client.get_all_commitments()

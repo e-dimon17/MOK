@@ -636,7 +636,10 @@ async def catch_up(
             skipped.append(w)
             continue
 
-        commits: dict[int, WindowCommit] = await asyncio.to_thread(chain.get_window_commits, w)
+        try:
+            commits: dict[int, WindowCommit] = await asyncio.to_thread(chain.get_window_commits, w)
+        except Exception as e:  # noqa: BLE001 — chain/RPC failures are retryable at the app layer
+            raise CatchUpError(f"window {w}: chain read failed: {e}") from e
         current_root = state_root(model_params.items())
         want = consensus_state_root(commits)
         if want is None:

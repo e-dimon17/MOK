@@ -180,17 +180,39 @@ class ChainClient:
         """All raw commitments keyed by uid, via one substrate query_map."""
         return {uid: wire for uid, (wire, _blk) in self._commitments_with_blocks(block).items()}
 
+    def _read_retry(self, what: str, fn: Callable[[], Any]) -> Any:
+        """Retry an idempotent chain READ with backoff; ChainError on exhaustion.
+
+        Public RPC endpoints are load-balanced and transiently flaky (UnknownBlock
+        on a just-resolved head, dropped websockets). Reads are safe to repeat;
+        one blip must never kill a node."""
+        retries = max(1, self.cfg.commit_retries)
+        last: Exception | None = None
+        for attempt in range(retries):
+            try:
+                return fn()
+            except Exception as e:  # noqa: BLE001 — SDK raises broadly
+                last = e
+                log.warning("chain read failed", what=what, attempt=attempt, error=str(e))
+                if attempt + 1 < retries:
+                    time.sleep(self._backoff_base_s * (2**attempt))
+        raise ChainError(f"{what} failed after {retries} attempts") from last
+
     def _commitments_with_blocks(self, block: int | None = None) -> dict[int, tuple[str, int | None]]:
         """{uid: (wire, block_the_commit_landed_in)} at `block` (None = head). The
         pallet records the commit block alongside each value; None when absent."""
-        substrate = self.subtensor.substrate
-        block_hash = None if block is None else substrate.get_block_hash(block)
-        query_result = substrate.query_map(
-            module="Commitments",
-            storage_function="CommitmentOf",
-            params=[self.cfg.netuid],
-            block_hash=block_hash,
-        )
+
+        def _query() -> Any:
+            substrate = self.subtensor.substrate
+            block_hash = None if block is None else substrate.get_block_hash(block)
+            return substrate.query_map(
+                module="Commitments",
+                storage_function="CommitmentOf",
+                params=[self.cfg.netuid],
+                block_hash=block_hash,
+            )
+
+        query_result = self._read_retry(f"commitments query_map(block={block})", _query)
         mg = self.metagraph
         hotkey_to_uid = {
             hk: int(uid)
