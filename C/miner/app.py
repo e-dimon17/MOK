@@ -314,27 +314,51 @@ class MinerApp:
     # Recovery / persistence
     # ------------------------------------------------------------------ #
 
+    def _gate_close_ts(self, window: int) -> float:
+        """When the leader can first have certified `window` (its upload gate closes)."""
+        ctx = self.ctx
+        return ctx.clock.boundary_ts(window + 1) + ctx.cfg.window.upload_grace_s
+
     async def _recover(self, *, to_window: int) -> None:
-        """Catch up (window-1, to_window] with bounded retries, then rejoin."""
+        """Catch up (window-1, to_window] then rejoin.
+
+        Optimistic then patient: the certificate for `to_window` may already
+        exist (leaders publish asynchronously), so try at once; if it is still
+        missing, the gate for that window may simply not have closed yet (a
+        rejoining node commonly desyncs mid-window) — keep retrying until the
+        gate closes plus a window-scale publication budget, not for seconds.
+        """
         ctx = self.ctx
         from_window = self.window - 1
+        window_s = ctx.clock.boundary_ts(1) - ctx.clock.boundary_ts(0)
+        # Retry until at least: gate close of the target + half a window for the
+        # leader to gather/evaluate/certify. Never less than the configured retries.
+        patience_until = self._gate_close_ts(to_window) + 0.5 * window_s
+        attempt = 0
         last: CatchUpError | None = None
-        for attempt in range(self.catchup_retries):
+        done = False
+        while not done and not self._stop.is_set():
+            attempt += 1
             try:
                 await catch_up_replica(
                     ctx, self.model, self.outer_step, from_window=from_window, to_window=to_window
                 )
-                break
+                done = True
             except (CatchUpError, StorageError, ExchangeError, TimeoutError) as e:
                 last = e if isinstance(e, CatchUpError) else CatchUpError(str(e))
+                now = ctx.clock.now()
                 log.warning(
                     "catch-up attempt failed",
-                    attempt=attempt + 1,
-                    of=self.catchup_retries,
+                    attempt=attempt,
                     error=str(e),
+                    gate_closes_in_s=round(self._gate_close_ts(to_window) - now, 1),
                 )
+                if attempt >= self.catchup_retries and now >= patience_until:
+                    break
                 await asyncio.sleep(self.catchup_retry_s)
-        else:
+        if not done:
+            if self._stop.is_set():
+                return
             assert last is not None
             raise last
         self.window = to_window + 1
