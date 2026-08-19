@@ -40,6 +40,7 @@ the chain client is only touched through `exchange.put_window_payload`.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -619,6 +620,17 @@ class WindowRunner:
             )
 
         # Phase 1 — plan + verified shard prefetch.
+        t_window = time.monotonic()
+        if self.rank == 0:
+            log.info(
+                "window start",
+                window=window,
+                phase=phase.name,
+                data=phase.data,
+                inner_steps=phase.inner_steps,
+                global_step=global_state.global_step,
+                tokens_consumed=global_state.tokens_consumed,
+            )
         verify_index_matches_ref(self.shard_cache.index, self.manifest.dataset(phase.data))
         plan = build_window_plan(
             self.manifest,
@@ -629,7 +641,18 @@ class WindowRunner:
             rank=self.rank,
             world_size=self.world_size,
         )
+        t0 = time.monotonic()
         await self.shard_cache.prefetch(set(plan.shard_ids), self.fetch_fn)
+        if self.rank == 0:
+            log.info(
+                "shards ready",
+                window=window,
+                shards=len(set(plan.shard_ids)),
+                sequences=plan.total_sequences,
+                prefetch_s=round(time.monotonic() - t0, 1),
+            )
+            log.info("training", window=window, inner_steps=phase.inner_steps, device=str(self.device))
+        t0 = time.monotonic()
 
         # Phases 2-5 — the pure training core (replay-shared).
         readers: dict[int, ShardReader] = {}
@@ -663,6 +686,20 @@ class WindowRunner:
             global_inner_step=artifacts.result.global_inner_steps_done,
             tokens_consumed=global_state.tokens_consumed + artifacts.result.tokens,
         )
+        if self.rank == 0:
+            r = artifacts.result
+            log.info(
+                "training done",
+                window=window,
+                train_s=round(time.monotonic() - t0, 1),
+                entry_loss=r.entry_loss,
+                final_loss=r.final_loss,
+                grad_norm=r.grad_norm_mean,
+                capacity_util=r.capacity_util_max,
+                tokens=r.tokens,
+                theta_end=artifacts.theta_end_root,
+                payload_bytes=len(artifacts.payload_bytes) if artifacts.payload_bytes else 0,
+            )
 
         # Phases 6-7 — upload gate, certificate, certified gather (rank 0 I/O).
         verdict = await self._publish_and_gather(window, artifacts)
@@ -690,6 +727,15 @@ class WindowRunner:
         state_root_after = shared_master_root(
             self.model, rank=self.rank, world_size=self.world_size, comm=self.comm
         )
+        if self.rank == 0:
+            log.info(
+                "outer step applied",
+                window=window,
+                certified_peers=list(cert.included_uids),
+                applied_peers=report.applied_peers,
+                outer_grad_l2=report.global_grad_l2,
+                state_root_after=state_root_after,
+            )
 
         sync_divergences: tuple[str, ...] = ()
         checkpoint_saved = False
@@ -730,6 +776,16 @@ class WindowRunner:
                 )
                 await self.checkpointer.save(window, master, self.outer_step.state_dict(), meta)
                 checkpoint_saved = True
+                log.info("checkpoint saved", window=window, state_root=state_root_after)
+            log.info(
+                "window done",
+                window=window,
+                window_s=round(time.monotonic() - t_window, 1),
+                late_upload=verdict["late"],
+                sync_divergences=len(sync_divergences),
+                global_step=state_after.global_step,
+                tokens_consumed=state_after.tokens_consumed,
+            )
 
         self.comm.barrier()
         return WindowOutcome(
@@ -759,12 +815,31 @@ class WindowRunner:
         late = False
         receipt: UploadReceipt | None = None
         assert artifacts.payload is not None
-        if self.clock.now() >= self._gate_deadline(window):
+        gate_left = self._gate_deadline(window) - self.clock.now()
+        if gate_left <= 0:
             late = True
-            log.warning("upload gate already closed — skipping upload", window=window)
+            log.warning(
+                "upload gate already closed — skipping upload",
+                window=window,
+                missed_by_s=round(-gate_left, 1),
+            )
         else:
+            log.info(
+                "publishing: phase 1 chain commit (WindowCommit) then phase 2 upload",
+                window=window,
+                gate_left_s=round(gate_left, 1),
+                payload_hash=artifacts.payload_hash,
+            )
+            t0 = time.monotonic()
             receipt = await put_window_payload(
                 self.storage, self.chain, artifacts.payload, version=self.payload_version
+            )
+            log.info(
+                "published",
+                window=window,
+                key=receipt.key,
+                committed=receipt.committed,
+                publish_s=round(time.monotonic() - t0, 1),
             )
 
         if self.self_leader:
@@ -792,6 +867,13 @@ class WindowRunner:
             "cert": None,
             "gather": None,
         }
+        log.info(
+            "awaiting leader certificate",
+            window=window,
+            leader_bucket=self.leader_bucket(window).bucket_name,
+            timeout_s=self.cert_timeout_s,
+        )
+        t0 = time.monotonic()
         cert = await await_certificate(
             self.storage,
             self.leader_bucket(window),
@@ -800,7 +882,15 @@ class WindowRunner:
             poll_s=self.cert_poll_s,
         )
         if cert is None:
+            log.warning("certificate timeout — desync", window=window, waited_s=round(time.monotonic() - t0, 1))
             return {**base, "status": "desync", "reason": "certificate timeout"}
+        log.info(
+            "certificate received",
+            window=window,
+            leader_uid=cert.leader_uid,
+            included_uids=list(cert.included_uids),
+            wait_s=round(time.monotonic() - t0, 1),
+        )
         if artifacts.state_root_start is not None and cert.theta_start_root != artifacts.state_root_start:
             return {
                 **base,
@@ -824,12 +914,14 @@ class WindowRunner:
             leader_bucket=self.leader_bucket(window),
         )
         if gather.missing:
+            log.warning("certified payloads unavailable — desync", window=window, missing=gather.missing)
             return {
                 **base,
                 "cert": cert,
                 "status": "desync",
                 "reason": f"certified payloads unavailable: {gather.missing}",
             }
+        log.info("gathered certified payloads", window=window, uids=list(gather.uids))
         return {**base, "status": "ok", "reason": "", "cert": cert, "gather": gather}
 
     async def _sync_check(

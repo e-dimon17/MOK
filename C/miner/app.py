@@ -157,8 +157,17 @@ class MinerApp:
             ctx.cfg, ctx.manifest, self.window, world_size=ctx.protocol_world_size
         )
         self.warmup_left = ctx.cfg.window.warmup_null_windows if await self._is_fresh(from_window) else 0
+        log.info(
+            "miner ready",
+            uid=ctx.uid,
+            start_window=self.window,
+            replica_root=hash_named_tensors(self.model.iter_master_params()),
+            device=str(ctx.device),
+            world_size=ctx.world_size,
+            warmup_windows=self.warmup_left,
+        )
         if self.warmup_left:
-            log.info("fresh uid — warmup null windows ahead", warmup=self.warmup_left)
+            log.info("fresh uid — warmup null windows ahead (train, publish nothing)", warmup=self.warmup_left)
 
         while True:
             if self._stop.is_set():
@@ -166,8 +175,11 @@ class MinerApp:
                 return 0
             head = await asyncio.to_thread(ctx.chain.current_window, ctx.manifest)
             if self.window < head:
+                log.info("behind chain head — catching up", my_window=self.window, head=head)
                 await self._recover(to_window=head - 1)
                 continue
+            if self.window > head:
+                log.info("waiting for next window boundary", next_window=self.window, head=head)
             while self.window > head and not self._stop.is_set():
                 await asyncio.sleep(self.window_poll_s)
                 head = await asyncio.to_thread(ctx.chain.current_window, ctx.manifest)
@@ -185,7 +197,12 @@ class MinerApp:
                 raise SystemExit(RESTART_EXIT_CODE)
             if outcome.desync:
                 ctx.metrics.emit("desync", window=self.window, reason=outcome.reason)
-                log.warning("window desynced — entering catch-up", reason=outcome.reason)
+                log.warning(
+                    "window desynced — entering catch-up",
+                    window=self.window,
+                    reason=outcome.reason,
+                    late_upload=outcome.late_upload,
+                )
                 head = await asyncio.to_thread(ctx.chain.current_window, ctx.manifest)
                 await self._recover(to_window=max(self.window, head - 1))
                 self.completed_windows += 1
@@ -364,6 +381,12 @@ class MinerApp:
         self.window = to_window + 1
         self.run_state = run_state_at(
             ctx.cfg, ctx.manifest, self.window, world_size=ctx.protocol_world_size
+        )
+        log.info(
+            "caught up — rejoining",
+            through_window=to_window,
+            next_window=self.window,
+            replica_root=hash_named_tensors(self.model.iter_master_params()),
         )
         ctx.metrics.emit("catch_up", window=self.window, to_window=to_window)
 

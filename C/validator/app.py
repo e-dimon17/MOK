@@ -36,6 +36,7 @@ import contextlib
 import json
 import os
 import signal
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -226,6 +227,7 @@ class ValidatorApp:
             target = head - 1  # the newest window whose gate can be closed
             gate_close = ctx.clock.boundary_ts(self.window + 1) + ctx.cfg.window.upload_grace_s
             if self.window > target or ctx.clock.now() < gate_close:
+                self._log_waiting(head, gate_close)
                 await asyncio.sleep(self.poll_s)
                 continue
             if target - self.window >= 3:
@@ -246,8 +248,24 @@ class ValidatorApp:
     # One window
     # ------------------------------------------------------------------ #
 
+    _last_wait_log: float = 0.0
+
+    def _log_waiting(self, head: int, gate_close: float) -> None:
+        """One 'waiting' line per minute so an idle validator is visibly alive."""
+        now = self.ctx.clock.now()
+        if now - self._last_wait_log < 60.0:
+            return
+        self._last_wait_log = now
+        log.info(
+            "waiting for gate close",
+            next_window=self.window,
+            chain_head_window=head,
+            gate_closes_in_s=round(max(0.0, gate_close - now), 0),
+        )
+
     async def process_window(self, window: int) -> None:
         ctx = self.ctx
+        t_window = time.monotonic()
         cfg = ctx.cfg
         if ctx.manifest.is_void(window):
             log.info("void window skipped", window=window)
@@ -263,12 +281,25 @@ class ValidatorApp:
         views, payload_bytes, payloads, upload_ts = await self._gate_and_fetch(
             window, commits, buckets, theta_start_root
         )
+        log.info(
+            "window commits",
+            window=window,
+            committed_uids=sorted(commits),
+            in_gate=sorted(u for u, v in views.items() if v.in_gate),
+            valid=sorted(u for u, v in views.items() if v.valid),
+            theta_start=theta_start_root,
+        )
 
         # (b) leader duties before anyone can gather
         is_leader = self.leader.is_leader()
         if is_leader:
             await self.leader.publish_certificate(
                 window, views, payload_bytes, self.final_scores, theta_start_root
+            )
+            log.info(
+                "certificate published (leader)",
+                window=window,
+                included=sorted(u for u, v in views.items() if v.in_gate and v.valid),
             )
 
         # (c) evaluate at θ_start(window)
@@ -283,6 +314,14 @@ class ValidatorApp:
         for uid, rec in self.last_eval.items():
             self.ema.update(uid, rec.indicator, window)
             scores[uid] = rec.score
+            log.info(
+                "evaluated miner",
+                window=window,
+                miner=uid,
+                gradient_score=rec.score,
+                indicator=rec.indicator,
+                ema=self.ema.value(uid),
+            )
         if scores:
             self.book.rate_window(scores)
 
@@ -293,6 +332,13 @@ class ValidatorApp:
         await self._catch_up_retrying(from_window=window - 1, to_window=window)
         master = dict(self.model.iter_master_params())
         state_root_after = hash_named_tensors(master.items())
+        log.info(
+            "outer step applied (lockstep)",
+            window=window,
+            state_root_before=theta_start_root,
+            state_root_after=state_root_after,
+            changed=state_root_after != theta_start_root,
+        )
 
         # (f) sync scores from miner debug slices vs our post-step params
         self.last_sync = await self._sync_scores(window, sorted(payloads), buckets, master)
@@ -329,6 +375,8 @@ class ValidatorApp:
         }
         self.windows_since_weights += 1
         if self.windows_since_weights >= cfg.scoring.windows_per_weights:
+            positive = {u: round(v, 4) for u, v in self.final_scores.items() if v > 0}
+            log.info("submitting weights", window=window, final_scores=positive or "none")
             await submit_weights(ctx.chain, self.final_scores, cfg)
             self.windows_since_weights = 0
 
@@ -341,6 +389,16 @@ class ValidatorApp:
 
         # (j) persist + telemetry
         self.state.save(self)
+        log.info(
+            "window processed",
+            window=window,
+            leader=is_leader,
+            committed=len(commits),
+            evaluated=len(self.last_eval),
+            probe_loss=probe_loss,
+            state_root_after=state_root_after,
+            window_s=round(time.monotonic() - t_window, 1),
+        )
         ctx.metrics.emit(
             "validator_window",
             window=window,

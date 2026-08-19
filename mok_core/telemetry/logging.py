@@ -36,13 +36,64 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(entry, ensure_ascii=False, default=str)
 
 
-def setup_logging(level: str = "INFO", *, stream=None) -> logging.Logger:
+class ConsoleFormatter(logging.Formatter):
+    """Operator-facing one-line format:
+    ``HH:MM:SS LEVEL logger  message  key=value ...`` with bound context first.
+    Values are compacted (hex digests shortened to 12 chars, floats to 4 sig.)."""
+
+    _LEVEL_PAD = 7
+
+    @staticmethod
+    def _compact(v: Any) -> str:
+        if isinstance(v, float):
+            return f"{v:.4g}"
+        if isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v):
+            return v[:12] + "…"
+        s = str(v)
+        return s if len(s) <= 96 else s[:93] + "..."
+
+    def format(self, record: logging.LogRecord) -> str:
+        ts = time.strftime("%H:%M:%S", time.localtime(record.created))
+        ctx = _context.get() or {}
+        extra = getattr(record, "fields", None)
+        fields = {**ctx, **(extra if isinstance(extra, dict) else {})}
+        kv = " ".join(f"{k}={self._compact(v)}" for k, v in fields.items())
+        name = record.name.removeprefix("mok.")
+        line = f"{ts} {record.levelname:<{self._LEVEL_PAD}} {name:<16} {record.getMessage()}"
+        if kv:
+            line += f"  {kv}"
+        if record.exc_info and record.exc_info[0] is not None:
+            line += "\n" + self.formatException(record.exc_info)
+        return line
+
+
+LOG_FORMAT_ENV = "MOK_LOG_FORMAT"      # "console" | "json"; default: console on a TTY, else json
+LOG_LEVEL_ENV = "MOK_LOG_LEVEL"        # overrides the config level when set
+
+
+def _pick_format(stream: Any) -> str:
+    import os  # noqa: PLC0415
+
+    fmt = os.environ.get(LOG_FORMAT_ENV, "").lower()
+    if fmt in ("console", "json"):
+        return fmt
+    return "console" if getattr(stream, "isatty", lambda: False)() else "json"
+
+
+def setup_logging(level: str = "INFO", *, stream=None, fmt: str | None = None) -> logging.Logger:
+    """Configure the 'mok' logger once. Format: `fmt`, else $MOK_LOG_FORMAT, else
+    console when stderr is a TTY (operators) and JSON otherwise (log shippers).
+    $MOK_LOG_LEVEL overrides `level`."""
+    import os  # noqa: PLC0415
+
     root = logging.getLogger("mok")
-    root.setLevel(level.upper())
+    root.setLevel(os.environ.get(LOG_LEVEL_ENV, level).upper())
     root.propagate = False
     if not root.handlers:
-        handler = logging.StreamHandler(stream or sys.stderr)
-        handler.setFormatter(JsonFormatter())
+        out = stream or sys.stderr
+        handler = logging.StreamHandler(out)
+        chosen = fmt or _pick_format(out)
+        handler.setFormatter(ConsoleFormatter() if chosen == "console" else JsonFormatter())
         root.addHandler(handler)
     return root
 
