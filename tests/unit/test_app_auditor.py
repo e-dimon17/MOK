@@ -351,3 +351,27 @@ def test_auditor_wall_budget_skips_tasks(
     assert hash_named_tensors(app.model.iter_master_params()) == hash_named_tensors(
         expected.iter_master_params()
     )
+
+
+def test_auditor_waits_out_a_pending_certificate(monkeypatch) -> None:
+    """A down/lagging leader must stall the auditor, not crash it (the same
+    guarantee the miner has): pending-certificate retries are unbounded."""
+    import C.auditor.app as app_mod
+    from C.core.checkpoint import CertificatePendingError
+
+    calls = {"n": 0}
+
+    async def flaky_catch_up(ctx, model, outer, *, from_window, to_window):
+        calls["n"] += 1
+        if calls["n"] <= 7:                       # far beyond catchup_retries=2
+            raise CertificatePendingError("window 5: 2 on-chain commits but no leader certificate")
+
+    monkeypatch.setattr(app_mod, "catch_up_replica", flaky_catch_up)
+    app = app_mod.AuditorApp.__new__(app_mod.AuditorApp)
+    app.ctx = None
+    app.model = None
+    app.outer_step = None
+    app.catchup_retries = 2
+    app.catchup_retry_s = 0.01
+    asyncio.run(app._catch_up_retrying(from_window=4, to_window=5))
+    assert calls["n"] == 8                        # 7 waits + the success

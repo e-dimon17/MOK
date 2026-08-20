@@ -37,7 +37,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from C.core.checkpoint import CatchUpError, Checkpointer
+from C.core.checkpoint import CatchUpError, CertificatePendingError, Checkpointer
 from C.core.exchange import ExchangeError, put_audit_report, put_telemetry
 from C.core.phase import resolve_phase
 from C.core.replay import (
@@ -317,17 +317,28 @@ class AuditorApp:
 
     async def _catch_up_retrying(self, *, from_window: int, to_window: int) -> None:
         last: Exception | None = None
-        for attempt in range(self.catchup_retries):
+        attempt = 0
+        while attempt < self.catchup_retries:
+            attempt += 1
             try:
                 await catch_up_replica(
                     self.ctx, self.model, self.outer_step, from_window=from_window, to_window=to_window
                 )
                 return
+            except CertificatePendingError as e:
+                # Auditors are never the leader: a window with commits but no
+                # certificate means the leader is down/lagging — WAIT for it.
+                attempt -= 1
+                last = e
+                log.warning(
+                    "leader has not certified the window yet — waiting", error=str(e)
+                )
+                await asyncio.sleep(max(self.catchup_retry_s, 5.0))
             except (CatchUpError, StorageError, ExchangeError, TimeoutError) as e:
                 last = e
                 log.warning(
                     "auditor catch-up attempt failed",
-                    attempt=attempt + 1,
+                    attempt=attempt,
                     of=self.catchup_retries,
                     error=str(e),
                 )
