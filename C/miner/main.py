@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 
 from mok_core.telemetry import get_logger
@@ -23,11 +24,18 @@ async def _amain(argv: list[str] | None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     try:
-        return asyncio.run(_amain(argv))
-    except SystemExit as e:  # restart_required propagates its code
-        return e.code if isinstance(e.code, int) else 1
+        code = asyncio.run(_amain(argv))
+    except SystemExit as e:  # restart/rollback codes propagate to the supervisor
+        code = e.code if isinstance(e.code, int) else 1
     except KeyboardInterrupt:
-        return 0
+        code = 0
+    # Exit WITHOUT interpreter teardown: the substrate SDK's websocket destructor
+    # can join a wedged keepalive thread forever, turning every exit path
+    # (rollback restart, phase restart, SIGTERM) into a hang. All state is
+    # persisted by the app before it raises; nothing below needs destructors.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":
