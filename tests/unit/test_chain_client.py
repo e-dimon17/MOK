@@ -257,9 +257,29 @@ class TestSetWeights:
             netuid=NETUID,
             uids=[1, 2],
             weights=[32768, 65535],
-            wait_for_inclusion=False,
+            wait_for_inclusion=True,
             wait_for_finalization=False,
         )
+
+    def test_extrinsic_response_object_success_is_honored(self) -> None:
+        # bittensor >= 10 returns an ExtrinsicResponse dataclass; its truthiness
+        # is ALWAYS True, so success must be read from the attribute (testnet 534
+        # finding: rate-limited "no attempt" responses were logged as submitted).
+        class _Resp:
+            def __init__(self, success: bool, message: str) -> None:
+                self.success = success
+                self.message = message
+
+        client, subtensor, _, _ = make_client()
+        subtensor.set_weights.return_value = _Resp(False, "No attempt made. Perhaps it is too soon to set weights!")
+        assert client.set_weights({1: 1.0}) is False
+        subtensor.set_weights.return_value = _Resp(True, "Success")
+        assert client.set_weights({1: 1.0}) is True
+
+    def test_none_result_is_failure(self) -> None:
+        client, subtensor, _, _ = make_client()
+        subtensor.set_weights.return_value = None
+        assert client.set_weights({1: 1.0}) is False
 
     def test_rejection_returns_false(self) -> None:
         client, subtensor, _, _ = make_client()

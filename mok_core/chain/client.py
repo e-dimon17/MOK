@@ -65,6 +65,28 @@ def normalize_weights_u16(weights: Mapping[int, float]) -> tuple[list[int], list
     return uids, vals
 
 
+def _extrinsic_outcome(result: Any) -> tuple[bool, str]:
+    """(success, message) from any SDK set_weights return shape.
+
+    bittensor < 10 returned ``(bool, str)`` (or a bare bool); >= 10 returns an
+    ``ExtrinsicResponse`` dataclass with ``.success`` / ``.message``. Objects are
+    NEVER judged by truthiness: ``bool(ExtrinsicResponse(success=False))`` is
+    True, which silently turned every rate-limited / rejected submission into a
+    logged "success" (testnet 534 finding, 2026-08-20).
+    """
+    if isinstance(result, tuple):
+        ok = bool(result[0]) if result else False
+        msg = str(result[1]) if len(result) > 1 else ""
+        return ok, msg
+    if isinstance(result, bool):
+        return result, ""
+    if result is None:
+        return False, "no response"
+    if hasattr(result, "success"):
+        return bool(result.success), str(getattr(result, "message", "") or "")
+    return bool(result), str(result)
+
+
 def _as_list(x: Any) -> list[Any]:
     """Metagraph fields may be list, numpy array, or torch tensor."""
     if hasattr(x, "tolist"):
@@ -490,9 +512,16 @@ class ChainClient:
     # Weights
     # ------------------------------------------------------------------ #
 
-    def set_weights(self, weights: dict[int, float], *, wait_for_inclusion: bool = False) -> bool:
+    def set_weights(self, weights: dict[int, float], *, wait_for_inclusion: bool = True) -> bool:
         """Set on-chain weights from a uid -> score map (u16-normalized).
-        Returns True on acceptance; False for empty weights or chain rejection."""
+
+        Returns True only when the SDK reports the extrinsic as SUCCESSFUL; False
+        for empty weights, a chain rejection, or an SDK "no attempt" (e.g. the
+        weights rate limit has not reopened). The SDK's verdict is logged either
+        way. ``wait_for_inclusion`` defaults to True so a True return means the
+        extrinsic was actually included in a block — with it off, SDK >= 10
+        reports success the moment the extrinsic is *submitted*.
+        """
         uids, vals = normalize_weights_u16(weights)
         if not uids:
             log.warning("set_weights called with no positive weights")
@@ -505,8 +534,12 @@ class ChainClient:
             wait_for_inclusion=wait_for_inclusion,
             wait_for_finalization=False,
         )
-        success = result[0] if isinstance(result, tuple) else result
-        return bool(success)
+        success, message = _extrinsic_outcome(result)
+        if success:
+            log.info("set_weights accepted", uids=uids, included=wait_for_inclusion, message=message)
+        else:
+            log.warning("set_weights NOT accepted", uids=uids, message=message)
+        return success
 
     # ------------------------------------------------------------------ #
     # Blocks and windows
