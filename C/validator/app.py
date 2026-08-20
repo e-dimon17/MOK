@@ -229,6 +229,10 @@ class ValidatorApp:
                 if meta.window + 1 > self.window:
                     self.window = meta.window + 1
                 log.info("validator replica restored", window=meta.window, root=meta.state_root)
+                # Checkpoints are periodic; state saves are per-window. Processing a
+                # window with a stale replica would publish an immutable certificate
+                # with the WRONG theta_start_root — align the replica first.
+                await self._align_replica(meta.window + 1)
             else:
                 log.warning("state file but no checkpoint — replica at θ_init, catching up from 0")
                 self.window = 0
@@ -253,10 +257,11 @@ class ValidatorApp:
                 await self._catch_up_retrying(from_window=self.window - 1, to_window=target - 1)
                 self.window = target
                 continue
-            await self.process_window(self.window)
+            w = self.window
+            await self.process_window(w)
             if self.on_window is not None:
-                self.on_window(self.window)
-            self.window += 1
+                self.on_window(w)
+            self.window = w + 1          # process_window already advanced+saved; idempotent
             self.completed_windows += 1
             if self.max_windows is not None and self.completed_windows >= self.max_windows:
                 self.state.save(self)
@@ -346,7 +351,12 @@ class ValidatorApp:
         # (d) overlap copy detection
         self._overlap_check(window, payloads, upload_ts)
 
-        # (e) THE lockstep core: apply window's certified outer step bitwise
+        # (e) THE lockstep core: apply window's certified outer step bitwise.
+        # Persist the resume point first: a crash after the apply resumes at
+        # window+1 with the replica already there; before it, one behind —
+        # healed by boot alignment (catch-up never rewinds).
+        self.window = window + 1
+        self.state.save(self)
         await self._catch_up_retrying(from_window=window - 1, to_window=window)
         master = dict(self.model.iter_master_params())
         state_root_after = hash_named_tensors(master.items())
@@ -575,6 +585,13 @@ class ValidatorApp:
         if batch is None:
             return float("nan")
         return evaluate_sequences(self.model, [batch], device=self.ctx.device)
+
+    async def _align_replica(self, replica_next: int) -> None:
+        """Bring the replica from θ_start(replica_next) to θ_start(self.window)."""
+        if self.window <= replica_next:
+            return
+        log.info("aligning replica to resume window", replica_at=replica_next, resume=self.window)
+        await self._catch_up_retrying(from_window=replica_next - 1, to_window=self.window - 1)
 
     async def _catch_up_retrying(self, *, from_window: int, to_window: int) -> None:
         last: Exception | None = None

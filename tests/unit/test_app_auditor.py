@@ -375,3 +375,24 @@ def test_auditor_waits_out_a_pending_certificate(monkeypatch) -> None:
     app.catchup_retry_s = 0.01
     asyncio.run(app._catch_up_retrying(from_window=4, to_window=5))
     assert calls["n"] == 8                        # 7 waits + the success
+
+
+def test_align_replica_catches_up_to_resume_window(monkeypatch) -> None:
+    """Checkpoint at w=100 (replica θ_start(101)) + state resume at 102 must
+    catch up 101 BEFORE any replay (the window-102 PreconditionError crash)."""
+    import C.auditor.app as app_mod
+
+    calls: list[tuple[int, int]] = []
+
+    async def record(self, *, from_window, to_window):
+        calls.append((from_window, to_window))
+
+    monkeypatch.setattr(app_mod.AuditorApp, "_catch_up_retrying", record)
+    app = app_mod.AuditorApp.__new__(app_mod.AuditorApp)
+    app.window = 102
+    asyncio.run(app._align_replica(101))       # replica is at θ_start(101)
+    assert calls == [(100, 101)]
+    calls.clear()
+    app.window = 101
+    asyncio.run(app._align_replica(101))       # already aligned -> no-op
+    assert calls == []

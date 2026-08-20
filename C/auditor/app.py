@@ -199,6 +199,10 @@ class AuditorApp:
         self.window = from_window + 1
         self._load_state()
         self.window = max(self.window, from_window + 1)
+        # Checkpoints are periodic but state saves are per-window: after a crash
+        # the replica can be several windows behind the resume point. Replays
+        # REQUIRE the replica at θ_start(resume) — align before processing.
+        await self._align_replica(from_window + 1)
         await self._ensure_auditor_commitment()
         log.info("auditor running", start_window=self.window)
 
@@ -211,10 +215,11 @@ class AuditorApp:
             if self.window > head - 1 or ctx.clock.now() < gate_close:
                 await asyncio.sleep(self.poll_s)
                 continue
-            await self.process_window(self.window)
+            w = self.window
+            await self.process_window(w)
             if self.on_window is not None:
-                self.on_window(self.window)
-            self.window += 1
+                self.on_window(w)
+            self.window = w + 1          # process_window already advanced+saved; idempotent
             self.completed_windows += 1
             self._save_state()
             if self.max_windows is not None and self.completed_windows >= self.max_windows:
@@ -260,6 +265,12 @@ class AuditorApp:
                 },
             )
         # Advance the replica: apply window's certified outer step bitwise.
+        # Persist the resume point BEFORE applying the outer step: a crash after
+        # the apply resumes at window+1 with the replica already there; a crash
+        # before it resumes at window+1 with the replica one behind — which the
+        # boot-time alignment heals (catch-up is forward-only, never rewinds).
+        self.window = window + 1
+        self._save_state()
         await self._catch_up_retrying(from_window=window - 1, to_window=window)
 
     async def _my_tasks(
@@ -314,6 +325,13 @@ class AuditorApp:
             log.info("audit report published", key=key, match=report.match)
         except (TimeoutError, StorageError, ExchangeError) as e:
             log.warning("audit report upload failed", miner=miner_uid, window=window, error=str(e))
+
+    async def _align_replica(self, replica_next: int) -> None:
+        """Bring the replica from θ_start(replica_next) to θ_start(self.window)."""
+        if self.window <= replica_next:
+            return
+        log.info("aligning replica to resume window", replica_at=replica_next, resume=self.window)
+        await self._catch_up_retrying(from_window=replica_next - 1, to_window=self.window - 1)
 
     async def _catch_up_retrying(self, *, from_window: int, to_window: int) -> None:
         last: Exception | None = None

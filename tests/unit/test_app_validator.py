@@ -385,3 +385,20 @@ def test_per_chunk_indices_shape_and_memory(template_model, index, data_dir):
     # end-to-end through the real report on real payloads — must be cheap and finite
     report = index_overlap_report(peer_indices, threshold=1.5)
     assert report.pairs_checked == 1 and 0.0 <= report.mean_overlap <= 1.0
+
+
+def test_align_replica_catches_up_to_resume_window(monkeypatch) -> None:
+    """Same invariant as the auditor: never process a window with a stale
+    replica — a wrong theta_start would go into an immutable certificate."""
+    import C.validator.app as app_mod
+
+    calls: list[tuple[int, int]] = []
+
+    async def record(self, *, from_window, to_window):
+        calls.append((from_window, to_window))
+
+    monkeypatch.setattr(app_mod.ValidatorApp, "_catch_up_retrying", record)
+    app = app_mod.ValidatorApp.__new__(app_mod.ValidatorApp)
+    app.window = 104
+    asyncio.run(app._align_replica(101))
+    assert calls == [(100, 103)]
