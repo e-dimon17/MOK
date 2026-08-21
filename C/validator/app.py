@@ -16,7 +16,7 @@ gate has closed (i.e. the validator trails the chain head by one window):
   (e) apply w's outer step bitwise (catch_up) — the lockstep core;
   (f) sync scores from miner debug slices vs own post-step params;
   (g) leader only: debug slices, checkpoint cadence, canonical probe loss →
-      SpikeDetector → rollback voting;
+      SpikeDetector (identity windows excluded from the baseline) → rollback voting;
   (h) every `scoring.windows_per_weights` windows: `compute_weights` →
       `chain.set_weights`;
   (i) ingest audit reports for window `w - audit.report_deadline_windows`
@@ -74,14 +74,48 @@ from .evaluator import EvalRecord, WindowEvaluator
 from .leader import PROBE_BLOCK_HASH, CommitView, LeaderDuties
 from .weights import submit_weights
 
-__all__ = ["PAYLOAD_VERSION", "ValidatorApp", "ValidatorState"]
+__all__ = ["PAYLOAD_VERSION", "SPIKE_THRESHOLD_ENV", "ValidatorApp", "ValidatorState", "resolve_spike_threshold"]
 
 log = get_logger("app.validator")
 
 #: The payload-key version slug this protocol generation reads/writes.
 PAYLOAD_VERSION = 1
 
+#: DEV-ONLY override of `rollback.spike_threshold_nats` (honored only under
+#: `--dev-insecure`). The config value is part of `config_hash`, so a toy-scale
+#: rehearsal cannot re-tune it without a new manifest; this lets a rehearsal keep
+#: running without inheriting the production 0.15-nat threshold. Never consulted
+#: on a normal node (logged and ignored).
+SPIKE_THRESHOLD_ENV = "MOK_SPIKE_THRESHOLD_NATS"
+
 _STATE_SPEC = 1
+
+
+def resolve_spike_threshold(
+    cfg_value: float, *, dev_insecure: bool, env: Mapping[str, str] | None = None
+) -> float:
+    """The SpikeDetector threshold: the config value, unless a dev-insecure node
+    sets SPIKE_THRESHOLD_ENV to a positive float (loudly logged)."""
+    raw = (os.environ if env is None else env).get(SPIKE_THRESHOLD_ENV, "")
+    if not raw:
+        return float(cfg_value)
+    if not dev_insecure:
+        log.warning(f"{SPIKE_THRESHOLD_ENV} set but ignored (not --dev-insecure)", value=raw)
+        return float(cfg_value)
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning(f"{SPIKE_THRESHOLD_ENV} is not a float — ignored", value=raw)
+        return float(cfg_value)
+    if not value > 0.0:
+        log.warning(f"{SPIKE_THRESHOLD_ENV} must be > 0 — ignored", value=raw)
+        return float(cfg_value)
+    log.warning(
+        "DEV OVERRIDE: spike threshold taken from env, NOT from the consensus config",
+        threshold_nats=value,
+        config_value=float(cfg_value),
+    )
+    return value
 
 
 class ValidatorState:
@@ -181,7 +215,10 @@ class ValidatorApp:
         )
         self.book = OpenSkillBook(cfg.scoring.openskill_beta, cfg.scoring.openskill_tau)
         self.ledger = SlashLedger(cfg.audit)
-        self.spike = SpikeDetector(cfg.rollback.spike_threshold_nats, cfg.rollback.spike_baseline_windows)
+        self.spike = SpikeDetector(
+            resolve_spike_threshold(cfg.rollback.spike_threshold_nats, dev_insecure=ctx.dev_insecure),
+            cfg.rollback.spike_baseline_windows,
+        )
         self.rollback = RollbackStateMachine(cfg.rollback, ctx.run_seed)
         self.checkpointer = Checkpointer(ctx.storage, ctx.state_dir / "checkpoints")
         self.leader = LeaderDuties(ctx, self.checkpointer, self.spike, self.rollback)
@@ -371,9 +408,15 @@ class ValidatorApp:
         # (f) sync scores from miner debug slices vs our post-step params
         self.last_sync = await self._sync_scores(window, sorted(payloads), buckets, master)
 
-        # (g) leader post-step duties
+        # (g) leader post-step duties. Identity windows (no certified peers —
+        # θ unchanged) contribute NOTHING to the spike baseline: their probe
+        # loss is the previous value repeated, and recording it collapses the
+        # baseline's spread so the first real step after an idle streak trips
+        # the detector on ordinary noise (testnet 534, twice).
         probe_loss = await self._probe_loss(window, phase)
-        self.probe_losses = (self.probe_losses + [probe_loss])[-cfg.rollback.spike_baseline_windows - 4 :]
+        applied = state_root_after != theta_start_root
+        if applied:
+            self.probe_losses = (self.probe_losses + [probe_loss])[-cfg.rollback.spike_baseline_windows - 4 :]
         if is_leader:
             await self.leader.publish_debug_slices(window, master)
             await self.leader.maybe_checkpoint(
@@ -383,7 +426,7 @@ class ValidatorApp:
                 state_root_after,
                 run_state_at(cfg, ctx.manifest, window + 1, world_size=ctx.protocol_world_size),
             )
-            decision = self.leader.observe_probe_loss(window, probe_loss)
+            decision = self.leader.observe_probe_loss(window, probe_loss, applied=applied)
             if decision is not None:
                 ctx.metrics.emit(
                     "rollback_activated", window=window, target=decision.target_window

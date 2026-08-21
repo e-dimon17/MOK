@@ -25,10 +25,10 @@ import torch
 from C.core.certificate import WindowCertificate, build_certificate
 from C.core.checkpoint import Checkpointer, CheckpointMeta
 from C.core.exchange import get_certificate, put_aggregator_object, put_certificate, put_debug_slices
-from C.core.rollback import RollbackDecision, RollbackStateMachine, SpikeDetector
+from C.core.rollback import RollbackDecision, RollbackState, RollbackStateMachine, SpikeDetector
 from C.core.window_runner import RunState
-from C.miner.bootstrap import NodeContext, resolve_leader_uid
-from mok_core.chain.schemas import VoteCommit
+from C.miner.bootstrap import OWNER_UID, NodeContext, resolve_leader_uid
+from mok_core.chain.schemas import ManifestCommit, VoteCommit
 from mok_core.config import canonical_hash
 from mok_core.telemetry import get_logger
 
@@ -64,6 +64,11 @@ class LeaderDuties:
         self.checkpointer = checkpointer
         self.spike = spike
         self.rollback = rollback
+        # True while OUR rollback VoteCommit occupies the single commitment slot
+        # of uid 0 (only when this validator IS the owner uid): the slot must be
+        # handed back to the ManifestCommit once voting concludes, or no node can
+        # bootstrap ("no manifest committed by owner uid 0").
+        self._owner_slot_holds_vote = False
 
     def is_leader(self) -> bool:
         return resolve_leader_uid(self.ctx.chain, fallback=self.ctx.uid) == self.ctx.uid
@@ -162,7 +167,9 @@ class LeaderDuties:
     # Spike detection → rollback voting
     # ------------------------------------------------------------------ #
 
-    def observe_probe_loss(self, window: int, probe_loss: float) -> RollbackDecision | None:
+    def observe_probe_loss(
+        self, window: int, probe_loss: float, *, applied: bool = True
+    ) -> RollbackDecision | None:
         """Feed the canonical probe loss; drive the rollback state machine.
 
         On a fresh alert: fixes the rewind target at the newest local
@@ -170,9 +177,16 @@ class LeaderDuties:
         Every window: ingest peers' on-chain votes stake-weighted, tick the
         timeout, and surface an activated `RollbackDecision` (the caller
         rewinds/relaunches; the manifest amendment is the owner's duty).
+        `applied=False` (identity outer step) feeds nothing to the detector.
+
+        Owner-as-validator topology: uid 0 has ONE commitment slot, so our
+        VoteCommit overwrites the ManifestCommit every node bootstraps from.
+        Once voting concludes (activated or expired) the ManifestCommit is
+        re-committed here — before the activation SystemExit — so a rollback
+        never locks the fleet out.
         """
         ctx = self.ctx
-        alerted = self.spike.observe(window, probe_loss)
+        alerted = self.spike.observe(window, probe_loss, applied=applied)
         if alerted:
             checkpoints = self.checkpointer.local_windows()
             targets = [w for w in checkpoints if w < window]
@@ -189,6 +203,8 @@ class LeaderDuties:
                 ctx.chain.commit_vote(
                     VoteCommit(kind="rollback", target=target, payload_hash=canonical_hash(vote_body))
                 )
+                if ctx.uid == OWNER_UID:
+                    self._owner_slot_holds_vote = True
                 log.warning("loss spike — rollback vote cast", window=window, target=target)
 
         if self.rollback.target_window is not None:
@@ -216,4 +232,22 @@ class LeaderDuties:
                 target=decision.target_window,
                 void=(decision.void.first_window, decision.void.last_window),
             )
+        if self._owner_slot_holds_vote and self.rollback.state is RollbackState.NORMAL:
+            self._restore_owner_manifest_slot()
         return decision
+
+    def _restore_owner_manifest_slot(self) -> None:
+        """Put the ManifestCommit back into uid 0's slot after our vote concluded."""
+        ctx = self.ctx
+        expected = ManifestCommit(manifest_hash=ctx.manifest.manifest_hash()).encode()
+        try:
+            current = ctx.chain.get_commitment(ctx.uid)
+            if current != expected:
+                ctx.chain.commit_manifest_hash(ctx.manifest.manifest_hash())
+                log.warning(
+                    "owner commitment slot restored to the ManifestCommit after rollback vote",
+                    manifest_hash=ctx.manifest.manifest_hash(),
+                )
+            self._owner_slot_holds_vote = False
+        except Exception as e:  # noqa: BLE001 — best-effort; the operator runbook covers the rest
+            log.error("could not restore the owner ManifestCommit — nodes cannot bootstrap until re-committed", error=str(e))

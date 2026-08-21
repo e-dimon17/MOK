@@ -56,6 +56,18 @@ class TestSpikeDetector:
         det.observe(2, 5.0)              # outlier does not drag the median
         assert det.observe(3, 2.2)       # 2.2 - median(1.9, 2.0, 5.0)=2.0 -> 0.2 > 0.15
 
+    def test_identity_windows_are_not_recorded(self):
+        # Windows with an identity outer step (applied=False) never alert and do
+        # not enter the baseline — an idle streak must not collapse its spread.
+        det = SpikeDetector(threshold_nats=0.15, baseline_windows=3)
+        for w, loss in enumerate((1.9, 2.1, 2.0)):
+            det.observe(w, loss)
+        for w in range(3, 40):
+            assert not det.observe(w, 2.0, applied=False)      # idle: same loss repeated
+        assert not det.observe(40, 99.0, applied=False)         # even an absurd value: ignored
+        assert not det.observe(41, 2.14)                        # 2.14 - median(1.9,2.1,2.0)=2.0 -> 0.14, no alert
+        assert det.observe(42, 2.31)                            # median(2.1,2.0,2.14)=2.1 -> 0.21 > 0.15
+
     def test_reset_clears_baseline(self):
         det = SpikeDetector(threshold_nats=0.15, baseline_windows=2)
         det.observe(0, 2.0)
@@ -164,7 +176,7 @@ class TestStateMachine:
         assert isinstance(decision, RollbackDecision)
         assert decision.target_window == 90
         assert decision.void.first_window == 91
-        assert decision.void.last_window == 100        # activation 101 - 1
+        assert decision.void.last_window == 101        # through the activation window (its outer step was applied)
         # consensus constant — change requires SPEC_VERSION bump
         expected_salt = "3ca7d00160286b6e8a7e445b5ff34540ccb3be02fc98081f21bf0f88f27d9607"
         assert decision.reseed_salt_hex == expected_salt

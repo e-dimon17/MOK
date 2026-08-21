@@ -25,8 +25,9 @@ from C.core.exchange import get_aggregator_object, put_audit_report, put_debug_s
 from C.core.replay import AuditReport, sign_report
 from C.core.slashing import SlashLedger
 from C.miner.bootstrap import AUDITOR_COMMITMENT, LocalSigner, LoopbackClock
-from C.validator.app import ValidatorApp, ValidatorState
+from C.validator.app import SPIKE_THRESHOLD_ENV, ValidatorApp, ValidatorState, resolve_spike_threshold
 from C.validator.audit_ingest import ingest_window_audits
+from C.validator.leader import LeaderDuties
 from C.validator.weights import submit_weights, weights_for
 from mok_core.chain.schemas import WindowCommit
 from mok_core.data import DatasetShardIndex
@@ -402,3 +403,59 @@ def test_align_replica_catches_up_to_resume_window(monkeypatch) -> None:
     app.window = 104
     asyncio.run(app._align_replica(101))
     assert calls == [(100, 103)]
+
+
+# --------------------------------------------------------------------------- #
+# Spike-threshold override + owner commitment-slot restore (testnet 534 findings)
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_spike_threshold_env_override_is_dev_only() -> None:
+    assert resolve_spike_threshold(0.15, dev_insecure=False, env={}) == 0.15
+    assert resolve_spike_threshold(0.15, dev_insecure=False, env={SPIKE_THRESHOLD_ENV: "1.0"}) == 0.15
+    assert resolve_spike_threshold(0.15, dev_insecure=True, env={SPIKE_THRESHOLD_ENV: "1.0"}) == 1.0
+    assert resolve_spike_threshold(0.15, dev_insecure=True, env={SPIKE_THRESHOLD_ENV: "nope"}) == 0.15
+    assert resolve_spike_threshold(0.15, dev_insecure=True, env={SPIKE_THRESHOLD_ENV: "-2"}) == 0.15
+    assert resolve_spike_threshold(0.15, dev_insecure=True, env={}) == 0.15
+
+
+def test_owner_validator_restores_manifest_commit_after_rollback_vote(tmp_path: Path) -> None:
+    """Owner == leader validator (uid 0): the rollback VoteCommit occupies the
+    single slot during voting and the ManifestCommit must be back once the
+    vote concludes (here: activated) — otherwise no node can bootstrap."""
+    from types import SimpleNamespace
+
+    from C.core.checkpoint import Checkpointer
+    from C.core.rollback import RollbackStateMachine, SpikeDetector
+    from C.miner.bootstrap import OWNER_UID, ScriptedChain
+    from mok_core.chain.schemas import ManifestCommit, VoteCommit, decode_commitment
+    from mok_core.config.schemas import RollbackConfig
+
+    manifest_hash = "ab" * 32
+    clock = LoopbackClock(genesis=0.0, window_s=10.0, now_ts=1.0)
+    chain = ScriptedChain(
+        clock=clock, start_block=0, blocks_per_window=1, my_uid=OWNER_UID,
+        stakes={OWNER_UID: 100.0}, manifest_hashes={OWNER_UID: manifest_hash},
+    )
+    chain.commit_manifest_hash(manifest_hash)  # the owner's normal slot content
+    ctx = SimpleNamespace(uid=OWNER_UID, chain=chain, manifest=SimpleNamespace(manifest_hash=lambda: manifest_hash))
+    ck = Checkpointer(None, tmp_path / "ckpt")
+    (tmp_path / "ckpt" / "w00000005").mkdir(parents=True)
+    (tmp_path / "ckpt" / "w00000005" / "meta.json").write_text("{}")  # rewind target = 5
+    cfg = RollbackConfig(spike_threshold_nats=0.15, spike_baseline_windows=2, vote_supermajority=0.5,
+                         vote_window_span=2, activation_delay_windows=1)
+    duties = LeaderDuties(ctx, ck, SpikeDetector(0.15, 2), RollbackStateMachine(cfg, bytes(32)))
+
+    assert duties.observe_probe_loss(10, 2.0) is None
+    assert duties.observe_probe_loss(11, 2.0) is None
+    assert duties.observe_probe_loss(12, 3.0) is None         # spike -> vote cast; our stake wins -> PENDING
+    slot = chain.get_commitment(OWNER_UID)
+    assert isinstance(decode_commitment(slot, hotkey_ss58=chain.hotkey_of(OWNER_UID)), VoteCommit)
+    decision = duties.observe_probe_loss(13, 3.0)              # activation window
+    assert decision is not None and decision.target_window == 5
+    assert (decision.void.first_window, decision.void.last_window) == (6, 13)
+    # the slot is handed back to the ManifestCommit before the app exits
+    assert chain.get_commitment(OWNER_UID) == ManifestCommit(manifest_hash=manifest_hash).encode()
+    assert chain.get_manifest_hash(OWNER_UID) == manifest_hash
+    # identity windows never touch the detector
+    assert duties.observe_probe_loss(14, 50.0, applied=False) is None

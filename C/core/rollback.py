@@ -51,8 +51,20 @@ class SpikeDetector:
         self.baseline_windows = baseline_windows
         self._losses: deque[float] = deque(maxlen=baseline_windows)
 
-    def observe(self, window: int, probe_loss: float) -> bool:
+    def observe(self, window: int, probe_loss: float, *, applied: bool = True) -> bool:
+        """Record one window's probe loss; True iff it spikes above the baseline.
+
+        `applied=False` marks a window whose outer step was the IDENTITY (no
+        certified peers — empty windows, fleet downtime): θ did not move, so the
+        probe loss is just the previous value again. Such windows are NOT
+        recorded and can never alert: feeding them would collapse the baseline
+        to a zero-spread constant, and the first real step after any idle
+        streak would then trip the threshold on ordinary step-to-step noise
+        (observed twice on testnet 534).
+        """
         del window  # part of the record signature; the baseline is order-based
+        if not applied:
+            return False
         alert = (
             len(self._losses) >= self.baseline_windows
             and probe_loss - median(self._losses) > self.threshold_nats
@@ -99,7 +111,8 @@ class RollbackStateMachine:
       yes_stake / total_stake > cfg.vote_supermajority.
     - `tick` at each window boundary times an unresolved vote out back to NORMAL.
     - `maybe_activate` yields the RollbackDecision once the activation window
-      (supermajority window + activation_delay_windows) is reached, then resets.
+      (supermajority window + activation_delay_windows) is reached, then resets;
+      the void range covers target+1 .. activation window inclusive.
     """
 
     def __init__(self, cfg: RollbackConfig, run_seed: bytes) -> None:
@@ -184,9 +197,16 @@ class RollbackStateMachine:
         assert self.target_window is not None
         target = self.target_window
         salt = rollback_salt(self.run_seed, target)
+        # The activation window itself is already in the discarded lineage: the
+        # validator applies a window's certified outer step BEFORE it feeds the
+        # probe loss that activates the decision, so that window's θ_end was
+        # built on the voided θ. Void through the activation window inclusive.
+        # (The owner's amendment must still extend the range to the chain head
+        # at amendment time — anything mined while the leader was down from the
+        # discarded lineage is equally void.)
         void = VoidRange(
             first_window=target + 1,
-            last_window=max(target + 1, self.activation_window - 1),
+            last_window=max(target + 1, self.activation_window),
             reseed_salt_hex=salt,
         )
         decision = RollbackDecision(target_window=target, void=void, reseed_salt_hex=salt)
