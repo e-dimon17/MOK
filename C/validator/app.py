@@ -59,6 +59,7 @@ from C.miner.bootstrap import (
     build_compressor,
     build_outer_step,
     catch_up_replica,
+    chain_head_window,
     load_master_state,
 )
 from mok_core.chain.schemas import WindowCommit
@@ -279,7 +280,10 @@ class ValidatorApp:
             if self._stop.is_set():
                 self.state.save(self)
                 return 0
-            head = await asyncio.to_thread(ctx.chain.current_window, ctx.manifest)
+            head = await chain_head_window(ctx)
+            if head is None:  # RPC blip — poll again, never die
+                await asyncio.sleep(self.poll_s)
+                continue
             target = head - 1  # the newest window whose gate can be closed
             gate_close = ctx.clock.boundary_ts(self.window + 1) + ctx.cfg.window.upload_grace_s
             if self.window > target or ctx.clock.now() < gate_close:

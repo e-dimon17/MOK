@@ -54,6 +54,7 @@ from C.miner.bootstrap import (
     NodeContext,
     auditor_uids_from_chain,
     catch_up_replica,
+    chain_head_window,
     materialize_replica,
 )
 from mok_core.chain.schemas import WindowCommit
@@ -210,7 +211,10 @@ class AuditorApp:
             if self._stop.is_set():
                 self._save_state()
                 return 0
-            head = await asyncio.to_thread(ctx.chain.current_window, ctx.manifest)
+            head = await chain_head_window(ctx)
+            if head is None:  # RPC blip — poll again, never die
+                await asyncio.sleep(self.poll_s)
+                continue
             gate_close = ctx.clock.boundary_ts(self.window + 1) + ctx.cfg.window.upload_grace_s
             if self.window > head - 1 or ctx.clock.now() < gate_close:
                 await asyncio.sleep(self.poll_s)

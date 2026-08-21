@@ -592,3 +592,30 @@ class TestReadRetry:
         subtensor.substrate.query_map.side_effect = RuntimeError("down")
         with pytest.raises(ChainError, match="failed after"):
             client.get_all_commitments()
+
+
+class TestBlockReadRetries:
+    """Block reads go through _read_retry: one public-RPC timeout must not kill a node
+    (a validator died on TimeoutError out of current_window, testnet 534, 2026-08-21)."""
+
+    def test_current_block_retries_then_succeeds(self) -> None:
+        client, subtensor, _, _ = make_client()
+        client._backoff_base_s = 0.0  # noqa: SLF001 — no sleeping in tests
+        subtensor.get_current_block.side_effect = [TimeoutError("timed out"), 7]
+        assert client.current_block(force=True) == 7
+
+    def test_block_hash_retries_then_succeeds(self) -> None:
+        client, subtensor, _, _ = make_client()
+        client._backoff_base_s = 0.0  # noqa: SLF001
+        subtensor.get_block_hash.side_effect = [RuntimeError("websocket closed"), "0x" + "ab" * 32]
+        assert client.block_hash(5) == bytes.fromhex("ab" * 32)
+
+    def test_exhausted_retries_raise_chain_error(self) -> None:
+        from mok_core.chain import ChainError
+
+        client, subtensor, _, _ = make_client()
+        client._backoff_base_s = 0.0  # noqa: SLF001
+        subtensor.get_current_block.side_effect = TimeoutError("timed out")
+        with pytest.raises(ChainError):
+            client.current_block(force=True)
+        assert subtensor.get_current_block.call_count == 3  # cfg.commit_retries

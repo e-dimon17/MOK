@@ -111,6 +111,7 @@ __all__ = [
     "build_node_model",
     "build_outer_step",
     "catch_up_replica",
+    "chain_head_window",
     "choose_backend",
     "DATASET_BUCKET_KEY",
     "DATASET_BUCKET_UID",
@@ -848,6 +849,21 @@ class NodeContext:
         aclose = getattr(self.storage, "aclose", None)
         if aclose is not None:
             await aclose()
+
+
+async def chain_head_window(ctx: Any) -> int | None:
+    """The chain head window, or None when the RPC read failed after retries.
+
+    Public RPC endpoints time out now and then; a node must treat that as
+    "poll again later", never as fatal (a validator died on exactly this —
+    `TimeoutError` out of `current_window` in its run loop, testnet 534,
+    2026-08-21 07:26 UTC). Callers sleep their poll interval and retry.
+    """
+    try:
+        return await asyncio.to_thread(ctx.chain.current_window, ctx.manifest)
+    except Exception as e:  # noqa: BLE001 — RPC blips (TimeoutError, ChainError, websocket resets)
+        log.warning("chain head unavailable — retrying next poll", error=str(e))
+        return None
 
 
 def resolve_leader_uid(chain: Any, *, fallback: int) -> int:

@@ -552,13 +552,13 @@ class ChainClient:
             cached_at, block = self._block_cache
             if now - cached_at < self.cfg.block_time_s:
                 return block
-        block = int(self.subtensor.get_current_block())
+        block = int(self._read_retry("get_current_block", self.subtensor.get_current_block))
         self._block_cache = (now, block)
         return block
 
     def block_hash(self, block: int) -> bytes:
         """32-byte hash of `block` (hex from the SDK, raw bytes out)."""
-        h = self.subtensor.get_block_hash(block)
+        h = self._read_retry(f"get_block_hash({block})", lambda: self.subtensor.get_block_hash(block))
         if isinstance(h, bytes):
             return h
         return bytes.fromhex(str(h).removeprefix("0x"))
@@ -566,10 +566,13 @@ class ChainClient:
     def block_timestamp(self, block: int) -> float:
         """Unix seconds of `block` via substrate Timestamp.Now at its hash
         (chain stores milliseconds)."""
-        block_hash = self.subtensor.get_block_hash(block)
-        result = self.subtensor.substrate.query(
-            module="Timestamp", storage_function="Now", block_hash=block_hash
-        )
+        def _q() -> Any:
+            block_hash = self.subtensor.get_block_hash(block)
+            return self.subtensor.substrate.query(
+                module="Timestamp", storage_function="Now", block_hash=block_hash
+            )
+
+        result = self._read_retry(f"block_timestamp({block})", _q)
         value = getattr(result, "value", result)
         return float(value) / 1000.0
 

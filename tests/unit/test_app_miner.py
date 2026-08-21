@@ -876,3 +876,21 @@ def test_recover_waits_out_a_pending_certificate(monkeypatch, tmp_path: Path) ->
     asyncio.run(app._recover(to_window=9))
     assert calls["n"] == 8                          # 7 pending waits + the success
     assert app.window == 10
+
+
+def test_chain_head_window_tolerates_rpc_failures() -> None:
+    """The shared head poll returns None (never raises) on an RPC failure, so the
+    miner/validator/auditor run loops sleep and retry instead of dying."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from C.miner.bootstrap import chain_head_window
+
+    ok = SimpleNamespace(chain=SimpleNamespace(current_window=lambda manifest: 42), manifest=None)
+    assert asyncio.run(chain_head_window(ok)) == 42
+
+    def boom(manifest):
+        raise TimeoutError("timed out")
+
+    bad = SimpleNamespace(chain=SimpleNamespace(current_window=boom), manifest=None)
+    assert asyncio.run(chain_head_window(bad)) is None

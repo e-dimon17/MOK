@@ -57,6 +57,7 @@ from .bootstrap import (
     NodeContext,
     build_compressor,
     catch_up_replica,
+    chain_head_window,
     materialize_replica,
 )
 
@@ -173,7 +174,10 @@ class MinerApp:
             if self._stop.is_set():
                 await self._final_checkpoint()
                 return 0
-            head = await asyncio.to_thread(ctx.chain.current_window, ctx.manifest)
+            head = await chain_head_window(ctx)
+            if head is None:  # RPC blip — poll again, never die
+                await asyncio.sleep(self.window_poll_s)
+                continue
             if self.window < head:
                 log.info("behind chain head — catching up", my_window=self.window, head=head)
                 await self._recover(to_window=head - 1)
@@ -182,7 +186,9 @@ class MinerApp:
                 log.info("waiting for next window boundary", next_window=self.window, head=head)
             while self.window > head and not self._stop.is_set():
                 await asyncio.sleep(self.window_poll_s)
-                head = await asyncio.to_thread(ctx.chain.current_window, ctx.manifest)
+                polled = await chain_head_window(ctx)
+                if polled is not None:
+                    head = polled
             if self._stop.is_set():
                 continue
 
@@ -203,8 +209,8 @@ class MinerApp:
                     reason=outcome.reason,
                     late_upload=outcome.late_upload,
                 )
-                head = await asyncio.to_thread(ctx.chain.current_window, ctx.manifest)
-                await self._recover(to_window=max(self.window, head - 1))
+                head = await chain_head_window(ctx)
+                await self._recover(to_window=max(self.window, (head - 1) if head is not None else self.window))
                 self.completed_windows += 1
                 if self.warmup_left > 0:
                     self.warmup_left -= 1
