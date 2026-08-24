@@ -54,21 +54,21 @@ dev = [
 ]
 
 [project.scripts]
-mok-data = "A.cli:main"
-mok-attest = "B.cli:attest_main"
-mok-onboard = "B.cli:onboard_main"
-mok-init-publish = "B.cli:init_publish_main"
-mok-calibrate = "B.cli:calibrate_main"
-mok-miner = "C.miner.main:main"
-mok-validator = "C.validator.main:main"
-mok-auditor = "C.auditor.main:main"
-mok-sft = "F.sft_train:main"
-mok-rl = "G.grpo_train:main"
-mok-eval = "H.run_evals:main"
+mok-data = "dataprep.cli:main"
+mok-attest = "fleet.cli:attest_main"
+mok-onboard = "fleet.cli:onboard_main"
+mok-init-publish = "fleet.cli:init_publish_main"
+mok-calibrate = "fleet.cli:calibrate_main"
+mok-miner = "subnet.miner.main:main"
+mok-validator = "subnet.validator.main:main"
+mok-auditor = "subnet.auditor.main:main"
+mok-sft = "sft.sft_train:main"
+mok-rl = "rl.grpo_train:main"
+mok-eval = "release.run_evals:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["mok_core*", "A*", "B*", "C*", "D*", "E*", "F*", "G*", "H*"]
+include = ["mok_core*", "dataprep*", "fleet*", "subnet*", "fork*", "anneal*", "sft*", "rl*", "release*"]
 exclude = ["tests*"]
 
 [tool.pytest.ini_options]

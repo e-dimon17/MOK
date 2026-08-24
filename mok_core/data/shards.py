@@ -2,7 +2,7 @@
 
 A shard is exactly `num_sequences * seq_len` tokens named
 `shard-<first-16-hex-of-blake2b-256>.bin`; its full-file blake2b-256 digest is
-the Merkle leaf committed in the dataset manifest. Step A writes shards; this
+the Merkle leaf committed in the dataset manifest. Dataprep writes shards; this
 module reads and verifies them.
 
 Memory-mapped shard lifecycle, narrowed to flat uint16 token files with
@@ -89,7 +89,7 @@ class ShardReader:
 
 
 class DatasetShardIndex(FrozenModel):
-    """Sidecar emitted by step A next to the dataset manifest: the ordered leaf
+    """Sidecar emitted by dataprep next to the dataset manifest: the ordered leaf
     hashes behind `DatasetManifestRef.merkle_root` (the ref stores the root only)."""
 
     name: str

@@ -1,11 +1,11 @@
-"""C/core/overlap.py — copy detection, offender attribution, severity ladder."""
+"""subnet/core/overlap.py — copy detection, offender attribution, severity ladder."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from C.core.overlap import (
+from subnet.core.overlap import (
     OverlapPair,
     determine_offender,
     index_overlap_report,
@@ -130,7 +130,7 @@ class TestSeverity:
 
 def test_pair_overlap_batching_is_exact(monkeypatch):
     """Row-batched kernel must equal the single-shot result bit for bit."""
-    import C.core.overlap as ov
+    import subnet.core.overlap as ov
 
     g = torch.Generator().manual_seed(7)
     a = torch.stack([torch.randperm(4096, generator=g)[:64] for _ in range(1000)])

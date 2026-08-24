@@ -2,7 +2,7 @@
 
 One θ, two backends: a full-expert (ep_size=1) reference replica is built with
 `build_reference_model` and RESHARDED into the EP-8 mok-backend model — the
-explicit resharding helper below is the same layout transform step B's
+explicit resharding helper below is the same layout transform fleet bring-up's
 init-publish uses (owner initializes all experts, each rank takes its
 contiguous expert block).
 
@@ -28,10 +28,10 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from C.core.inner_loop import IGNORE_INDEX
 from mok_core.config import RunConfig
 from mok_core.model import MoKTransformer, build_reference_model, init_model, is_expert_local
 from mok_core.model.losses import loss_head
+from subnet.core.inner_loop import IGNORE_INDEX
 
 TOLERANCES = {
     # routed_precision -> (loss abs tol, d_x cosine min, weight-grad-norm rel tol)

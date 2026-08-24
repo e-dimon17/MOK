@@ -7,7 +7,7 @@ ModelConfig (32 layers, first 3 dense SwiGLU at Id=9216 -- the run keeps the
 
 The real allocation smoke is OFF by default (`MOK_TEST_54B=1` enables it): it
 materializes one rank's 49.3B/EP-8 replica + MXFP8 caches on a B300 and checks
-the resident footprint. Budget context (playbook step C, ~208 GB/rank total):
+the resident footprint. Budget context (~208 GB/rank total):
 masters ~18 GB (bf16 replicated 2.3B + fp32 lm_head 0.27B + bf16 expert shard
 5.8B) + MXFP8 copies ~12 GB (fp8 + transposed fp8 + scales) — the remaining
 ~175 GB is Adam state, gradients, activations and workspace, which this smoke

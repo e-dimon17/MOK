@@ -1,4 +1,4 @@
-"""Unit tests for C/core/compress.py — SparseLoCo compression primitives."""
+"""Unit tests for subnet/core/compress.py — SparseLoCo compression primitives."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import math
 import pytest
 import torch
 
-from C.core.compress import (
+from subnet.core.compress import (
     SCALE_FLOOR,
     ChunkingTransformer,
     ErrorFeedback,

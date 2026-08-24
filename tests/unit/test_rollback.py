@@ -1,11 +1,12 @@
-"""C/core/rollback.py — spike detection, vote supermajority boundary, timeout,
+"""subnet/core/rollback.py — spike detection, vote supermajority boundary, timeout,
 activation decision + reseed-salt golden."""
 
 from __future__ import annotations
 
 import pytest
 
-from C.core.rollback import (
+from mok_core.config.schemas import RollbackConfig
+from subnet.core.rollback import (
     RollbackDecision,
     RollbackState,
     RollbackStateMachine,
@@ -13,7 +14,6 @@ from C.core.rollback import (
     SpikeDetector,
     rollback_salt,
 )
-from mok_core.config.schemas import RollbackConfig
 
 RUN_SEED = bytes(32)
 

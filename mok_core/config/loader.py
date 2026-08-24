@@ -1,7 +1,7 @@
 """YAML config loading with overlay merging and ${ENV:default} interpolation.
 
 A run is described by a base YAML plus zero or more step overlays
-(C/configs/base.yaml + bulk.yaml, D/configs/anneal.yaml, ...). Overlays
+(subnet/configs/base.yaml + bulk.yaml, anneal/configs/anneal.yaml, ...). Overlays
 deep-merge into the base; the merged dict validates into RunConfig.
 """
 

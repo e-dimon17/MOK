@@ -1,4 +1,4 @@
-"""C/core/scoring.py — score formulas, EMA, OpenSkill, weights ladder, eval pools."""
+"""subnet/core/scoring.py — score formulas, EMA, OpenSkill, weights ladder, eval pools."""
 
 from __future__ import annotations
 
@@ -6,8 +6,10 @@ import json
 
 import pytest
 
-from C.core.phase import PhaseConfig, resolve_phase
-from C.core.scoring import (
+from mok_core.config.manifest import DatasetManifestRef, PRFSpec, RunManifest
+from mok_core.config.schemas import LRSpec, RunConfig, ScoringConfig
+from subnet.core.phase import PhaseConfig, resolve_phase
+from subnet.core.scoring import (
     RANDOM_POOL_UID,
     BinaryEMA,
     EvalPools,
@@ -18,8 +20,6 @@ from C.core.scoring import (
     gradient_score,
     sync_score,
 )
-from mok_core.config.manifest import DatasetManifestRef, PRFSpec, RunManifest
-from mok_core.config.schemas import LRSpec, RunConfig, ScoringConfig
 
 RUN_SEED = bytes(32)
 BLOCK_HASH = b"\x01" * 32

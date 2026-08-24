@@ -51,7 +51,7 @@ def sdpa_backend(
 ) -> Iterator[str]:
     """Pin `torch.nn.attention.sdpa_kernel` to exactly one backend.
 
-    CPU tensors (tests, verify_bundle, the step-F parity gate — including on
+    CPU tensors (tests, verify_bundle, the SFT parity gate — including on
     hosts that *have* GPUs) can only use the math backend, so the pin follows
     `device` when given, not host CUDA availability. Yields the name of the
     backend actually pinned.
@@ -113,7 +113,7 @@ def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.T
 class CausalSelfAttention(nn.Module):
     """GQA causal attention: fused bias-free QKV, RoPE, SDPA with is_causal=True.
 
-    `rope_theta` overrides `cfg.rope_theta` (step E raises it to 5e5 for 16k
+    `rope_theta` overrides `cfg.rope_theta` (the context extension raises it to 5e5 for 16k
     context without touching the rest of the architecture).
     """
 

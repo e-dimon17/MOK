@@ -1,0 +1,59 @@
+# ============================================================================
+# Compose services for the three node roles.
+#   docker compose -f fleet/container/compose.yml --profile miner up -d
+# One profile per role; all share the blessed image and an .env file
+# (.env.example documents every variable, including MOK_CONTAINER_DIGEST).
+# GPU roles reserve the full 8-GPU node; restart policy keeps nodes in the
+# run across transient crashes (catch-up handles missed windows).
+# ============================================================================
+
+x-mok-node: &mok-node
+  image: ${MOK_IMAGE:-mok-subnet:latest}
+  env_file: .env
+  restart: unless-stopped
+  network_mode: host
+  ipc: host
+  shm_size: "32gb"
+  ulimits:
+    memlock: -1
+    stack: 67108864
+  volumes:
+    - mok-shard-cache:/root/.cache/mok-subnet
+    - mok-wallets:/root/.bittensor
+  logging:
+    driver: json-file
+    options: { max-size: "100m", max-file: "10" }
+
+x-mok-gpus: &mok-gpus
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 8
+            capabilities: [gpu]
+
+services:
+  miner:
+    <<: [*mok-node, *mok-gpus]
+    profiles: [miner]
+    command: ["miner"]
+
+  validator:
+    <<: [*mok-node, *mok-gpus]
+    profiles: [validator]
+    command: ["validator"]
+
+  auditor:
+    <<: [*mok-node, *mok-gpus]
+    profiles: [auditor]
+    command: ["auditor"]
+
+  healthcheck:
+    <<: *mok-node
+    profiles: [miner, validator, auditor]
+    command: ["healthcheck", "--interval", "300"]
+
+volumes:
+  mok-shard-cache:
+  mok-wallets:

@@ -1,4 +1,4 @@
-"""Tests for C/core/outer_opt.py — deterministic merge math and outer-step lockstep."""
+"""Tests for subnet/core/outer_opt.py — deterministic merge math and outer-step lockstep."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ import copy
 import pytest
 import torch
 
-from C.core.outer_opt import (
+from mok_core.config import OuterOptConfig
+from mok_core.determinism import tensor_bytes
+from subnet.core.outer_opt import (
     ReplicatedOuterStep,
     deterministic_segment_mean,
     median_norm_clip_factors,
 )
-from mok_core.config import OuterOptConfig
-from mok_core.determinism import tensor_bytes
 
 # --------------------------------------------------------------------------- #
 # deterministic_segment_mean

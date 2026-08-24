@@ -1,4 +1,4 @@
-"""Tests for C/core/window_runner.py — the full window protocol on CPU.
+"""Tests for subnet/core/window_runner.py — the full window protocol on CPU.
 
 Builds the complete loopback rig: real shard files -> DatasetShardIndex ->
 RunManifest -> WindowBatchPlan, a tiny reference-backend model, moto S3
@@ -25,19 +25,6 @@ import numpy as np
 import pytest
 import torch
 
-from C.core.checkpoint import Checkpointer
-from C.core.compress import ChunkingTransformer, ErrorFeedback, Quantizer, TopKCompressor
-from C.core.outer_opt import ReplicatedOuterStep
-from C.core.phase import resolve_phase
-from C.core.replay import ReplayTask, WindowReplayer
-from C.core.window_runner import (
-    DENSE_SUFFIX,
-    RunState,
-    SingleNodeComm,
-    WindowRunner,
-    run_state_at,
-    run_training_phase,
-)
 from mok_core.chain.schemas import WindowCommit
 from mok_core.config import (
     InnerOptConfig,
@@ -60,6 +47,19 @@ from mok_core.data import DatasetShardIndex, ShardCache, ShardReader, shard_leaf
 from mok_core.determinism import hash_named_tensors
 from mok_core.model import MoKTransformer, build_reference_model
 from mok_core.storage import StorageClient, keys
+from subnet.core.checkpoint import Checkpointer
+from subnet.core.compress import ChunkingTransformer, ErrorFeedback, Quantizer, TopKCompressor
+from subnet.core.outer_opt import ReplicatedOuterStep
+from subnet.core.phase import resolve_phase
+from subnet.core.replay import ReplayTask, WindowReplayer
+from subnet.core.window_runner import (
+    DENSE_SUFFIX,
+    RunState,
+    SingleNodeComm,
+    WindowRunner,
+    run_state_at,
+    run_training_phase,
+)
 
 SEED = 7
 RUN_SEED = bytes(range(32))
@@ -736,7 +736,7 @@ def test_training_phase_payload_bytes_deterministic(
 
 
 def _plan_for(model: MoKTransformer, manifest: RunManifest, phase) -> Any:
-    from C.core.window_runner import build_window_plan
+    from subnet.core.window_runner import build_window_plan
 
     return build_window_plan(
         manifest, phase, run_seed=RUN_SEED, uid=UID, window=WINDOW, rank=0, world_size=1

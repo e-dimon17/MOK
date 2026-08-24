@@ -66,7 +66,7 @@ class WindowBatchPlan:
     ) -> WindowBatchPlan:
         """Resolve the PRF into a concrete schedule. The manifest supplies the
         dataset tree and the active reseed salt; phase params arrive resolved
-        (C/core/phase.py owns the merge)."""
+        (subnet/core/phase.py owns the merge)."""
         if not 0 <= rank < world_size:
             raise ValueError(f"rank {rank} out of range [0, {world_size})")
         ds = manifest.dataset(dataset)

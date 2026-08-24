@@ -1,4 +1,4 @@
-"""Tests for C/core/replay.py — bitwise audits, fraud detection, consensus sampling.
+"""Tests for subnet/core/replay.py — bitwise audits, fraud detection, consensus sampling.
 
 The miner side runs `run_training_phase` directly (the exact function
 `WindowRunner.run_window` calls — the loopback equivalence is pinned in
@@ -17,10 +17,14 @@ import pytest
 import test_window_runner as twr
 import torch
 
-from C.core.compress import ErrorFeedback
-from C.core.inner_loop import InnerLoop
-from C.core.phase import resolve_phase
-from C.core.replay import (
+from mok_core.chain.schemas import WindowCommit
+from mok_core.config.manifest import RunManifest
+from mok_core.determinism import hash_named_tensors, per_tensor_digests
+from mok_core.model import MoKTransformer, build_reference_model
+from subnet.core.compress import ErrorFeedback
+from subnet.core.inner_loop import InnerLoop
+from subnet.core.phase import resolve_phase
+from subnet.core.replay import (
     AuditReport,
     PreconditionError,
     ReplayTask,
@@ -30,11 +34,7 @@ from C.core.replay import (
     sign_report,
     verify_report,
 )
-from C.core.window_runner import RunState, SingleNodeComm, build_window_plan, run_training_phase
-from mok_core.chain.schemas import WindowCommit
-from mok_core.config.manifest import RunManifest
-from mok_core.determinism import hash_named_tensors, per_tensor_digests
-from mok_core.model import MoKTransformer, build_reference_model
+from subnet.core.window_runner import RunState, SingleNodeComm, build_window_plan, run_training_phase
 
 UID = twr.UID
 WINDOW = twr.WINDOW

@@ -1,9 +1,0 @@
-# Frozen run tokenizer — playbook step A, method 1: 65,536-vocab ByteLevel BPE
-# trained on a ~100B-token weighted mixture sample (~400B chars at 4 chars/token).
-# Special ids are consensus constants: <|pad|>=0, <|bos|>=1, <|eos|>=2.
-vocab_size: 65536
-min_frequency: 2
-sample_chars_total: 400000000000
-pad_token: "<|pad|>"
-bos_token: "<|bos|>"
-eos_token: "<|eos|>"

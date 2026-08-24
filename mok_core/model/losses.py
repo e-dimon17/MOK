@@ -50,7 +50,7 @@ def aux_load_loss(router_logits: torch.Tensor, load: torch.Tensor, top_k: int) -
     matching DeepSeek-V3's complementary-loss magnitude class (coef 1e-4), NOT
     Switch's summed convention (coef 1e-2): this term is telemetry-grade pressure
     only — early-training balance protection comes from the schedule-capacity
-    warmup margin (multiplier 1.05, see C/configs/base.yaml), never from this loss.
+    warmup margin (multiplier 1.05, see subnet/configs/base.yaml), never from this loss.
     """
     num_tokens, num_experts = router_logits.shape
     probs = torch.softmax(router_logits.float(), dim=-1)

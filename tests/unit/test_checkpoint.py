@@ -1,4 +1,4 @@
-"""Tests for C/core/checkpoint.py — DCP layout, build_outer_inputs, bitwise catch-up."""
+"""Tests for subnet/core/checkpoint.py — DCP layout, build_outer_inputs, bitwise catch-up."""
 
 from __future__ import annotations
 
@@ -11,31 +11,6 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from C.core.certificate import WindowCertificate
-from C.core.checkpoint import (
-    KIND_META,
-    KIND_MODEL_TAR,
-    KIND_OUTER_STATE,
-    CatchUpError,
-    Checkpointer,
-    CheckpointError,
-    CheckpointMeta,
-    build_outer_inputs,
-    catch_up,
-    consensus_state_root,
-    sparse_pairs_from_compressed,
-)
-from C.core.compress import (
-    ChunkingTransformer,
-    Quantizer,
-    TopKCompressor,
-    unpack_2bit_values,
-    unpack_12bit_indices,
-)
-from C.core.exchange import AggregatorObject
-from C.core.outer_opt import ReplicatedOuterStep
-from C.core.payload import PayloadMeta, WindowPayload, serialize
-from C.core.window_state import state_root
 from mok_core.chain import WindowCommit
 from mok_core.config.canonical import canonical_bytes
 from mok_core.config.manifest import PRFSpec, RunManifest, VoidRange
@@ -48,6 +23,31 @@ from mok_core.config.schemas import (
 )
 from mok_core.determinism.hashing import hash_bytes, tensor_bytes
 from mok_core.storage import StorageClient, keys
+from subnet.core.certificate import WindowCertificate
+from subnet.core.checkpoint import (
+    KIND_META,
+    KIND_MODEL_TAR,
+    KIND_OUTER_STATE,
+    CatchUpError,
+    Checkpointer,
+    CheckpointError,
+    CheckpointMeta,
+    build_outer_inputs,
+    catch_up,
+    consensus_state_root,
+    sparse_pairs_from_compressed,
+)
+from subnet.core.compress import (
+    ChunkingTransformer,
+    Quantizer,
+    TopKCompressor,
+    unpack_2bit_values,
+    unpack_12bit_indices,
+)
+from subnet.core.exchange import AggregatorObject
+from subnet.core.outer_opt import ReplicatedOuterStep
+from subnet.core.payload import PayloadMeta, WindowPayload, serialize
+from subnet.core.window_state import state_root
 
 TARGET_CHUNK = 4
 TOPK = 3
@@ -515,7 +515,7 @@ async def test_catch_up_happy_path_two_windows(admin: Any, moto_endpoint: str):
         report = await catch_up(
             params,
             outer,
-            None,  # real C.core.exchange
+            None,  # real subnet.core.exchange
             sc,
             net.chain(),
             _manifest(),
@@ -677,7 +677,7 @@ async def test_catch_up_missing_certificate_with_commits_is_an_error(
 async def test_pending_certificate_is_distinct_wait_condition(admin: Any, moto_endpoint: str):
     """Commits-without-certificate raises CertificatePendingError (a subclass) so
     apps can WAIT on a lagging leader instead of treating it as corruption."""
-    from C.core.checkpoint import CertificatePendingError
+    from subnet.core.checkpoint import CertificatePendingError
 
     net = _Network(windows=[1])
     leader = make_creds(fresh_bucket(admin, "cu-pend-leader"))   # no cert published

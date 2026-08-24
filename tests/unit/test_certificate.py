@@ -1,4 +1,4 @@
-"""Tests for C/core/certificate.py — ranking, reserve promotion, wire format, verification."""
+"""Tests for subnet/core/certificate.py — ranking, reserve promotion, wire format, verification."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from C.core.certificate import (
+from subnet.core.certificate import (
     WindowCertificate,
     build_certificate,
     certificate_message,

@@ -1,0 +1,49 @@
+# RL phase 2 — GRPO/RLVR run configuration (parsed by rl/grpo_train.py:load_settings).
+# Method per playbook: verifiable tasks only (math answer-checked via sympy,
+# code execution-verified in a sandbox), ~10-20k prompts, group size 8,
+# LR 1e-6, KL penalty vs the DPO checkpoint, vLLM rollout servers.
+
+model_dir: runs/dpo/final
+output_dir: runs/grpo
+seed: 42
+
+group_size: 8            # completions sampled per prompt (num_generations)
+lr: 1.0e-6
+kl_coef: 0.04            # GRPO beta (KL vs frozen reference)
+bf16: true
+
+# per_device_train_batch_size counts COMPLETIONS; it must divide group_size
+# cleanly across ranks. 8 ranks x micro 8 x accum 8 = 512 completions/step
+# = 64 prompt groups per optimizer step.
+micro_batch_size: 8
+grad_accum: 8
+max_prompt_length: 1024
+max_completion_length: 2048
+temperature: 1.0
+
+epochs: 1
+logging_steps: 10
+save_steps: 100
+max_prompts: null        # int caps the prompt set for smoke runs
+
+# Sandboxed code verification (rl/rewards/code_reward.py).
+code_timeout_s: 6
+code_sandbox: auto       # auto -> bwrap when installed, else rlimit fallback
+
+# Rollout servers (TRL vllm server mode). One `trl vllm-serve`-compatible
+# endpoint per rollout node; training ranks round-robin across the list.
+# Each server process must call rl.vllm_plugin.register_mok_moe() first
+# (e.g. via VLLM_PLUGINS or a sitecustomize) so 'MokMoeForCausalLM' resolves.
+vllm:
+  server_mode: true
+  endpoints:
+    - http://127.0.0.1:8000
+
+# Prompt mixture (~18k): GSM8K+MATH train and MBPP train + self-generated
+# problems; n subsamples deterministically by seed.
+datasets:
+  math:
+    n: 12000
+  code:
+    n: 6000
+    selfgen_jsonl: null  # path to {"prompt", "tests"} JSONL, or null

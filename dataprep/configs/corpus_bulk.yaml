@@ -1,0 +1,65 @@
+# Bulk pretraining corpus — the training run's dataset tree (~2.6T training tokens;
+# ~3.2T prepared). Source order below IS the deterministic tokenize/pack order.
+# weights follow playbook: FineWeb-Edu 60 / DCLM 25 / Stack-v2 code 10 / FineMath 5.
+name: bulk
+seq_len: 4096
+chars_per_token: 4.0            # pre-tokenizer char-budget estimate for downloads
+
+# Dedup priority (smallest sources first): earlier sources are indexed and kept,
+# duplicates in later sources are dropped.
+dedup_order: [infiwebmath, finemath, starcoder_code, dclm_baseline, fineweb_edu_score2, fineweb_edu]
+
+sources:
+  - name: fineweb_edu
+    hf_path: HuggingFaceFW/fineweb-edu
+    hf_name: default
+    split: train
+    text_column: text
+    weight: 0.34
+    max_tokens: 1560000000000   # 1.56T (60% of 2.6T; ~1.2 epochs of the 1.3T corpus)
+
+  - name: dclm_baseline
+    hf_path: mlfoundations/dclm-baseline-1.0
+    split: train
+    text_column: text
+    weight: 0.14
+    max_tokens: 650000000000    # 650B — diversity complement
+
+  - name: starcoder_code
+    # bigcode/the-stack-v2 on the HF hub is IDs/metadata ONLY (contents live in
+    # Software Heritage S3 and are NOT hydrated by `datasets`) — unusable for
+    # streaming. starcoderdata is the curated, permissive, content-bearing
+    # ~250B-token corpus derived from The Stack. GATED: accept the terms once at
+    # https://huggingface.co/datasets/bigcode/starcoderdata (HF_TOKEN required).
+    hf_path: bigcode/starcoderdata
+    split: train
+    text_column: content
+    # Subdirectory schemas differ (extra hexsha/lang/size columns in some
+    # languages); project the read to `content` so the cast never sees them.
+    hf_columns: [content]
+    weight: 0.06
+    max_tokens: 260000000000    # 260B — deduped against web sources (see dedup_order)
+
+  - name: finemath
+    hf_path: HuggingFaceTB/finemath
+    hf_name: finemath-3plus
+    split: train
+    text_column: text
+    weight: 0.03
+    max_tokens: 130000000000    # 130B
+  - name: infiwebmath
+    # Web-math complement to finemath (same repo, different config) — restores
+    # the math share that global dedup pulled down to ~3%.
+    hf_path: HuggingFaceTB/finemath
+    hf_name: infiwebmath-3plus
+    split: train
+    weight: 0.03
+    max_tokens: 40000000000     # 40B
+  - name: fineweb_edu_score2
+    # Score>=2 superset of fineweb_edu (score>=3). Its overlap with the
+    # existing pool is removed automatically by dedup priority order (this
+    # source is LAST); the net contribution is score-2-only pages.
+    hf_path: HuggingFaceFW/fineweb-edu-score-2
+    split: train
+    weight: 0.40
+    max_tokens: 1500000000000   # 1.5T token budget for the expansion

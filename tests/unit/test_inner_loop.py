@@ -1,4 +1,4 @@
-"""Integration test for C/core/inner_loop.py — the CPU determinism gate.
+"""Integration test for subnet/core/inner_loop.py — the CPU determinism gate.
 
 Builds a REAL data path (uint16 shard files -> DatasetShardIndex -> manifest ->
 WindowBatchPlan) and a tiny reference-backend model, then runs full windows on
@@ -23,9 +23,6 @@ import numpy as np
 import pytest
 import torch
 
-from C.core.inner_loop import InnerLoop, WindowResult
-from C.core.phase import PhaseConfig, resolve_phase
-from C.core.zero1 import SingleProcessComm
 from mok_core.config import InnerOptConfig, LRSpec, ModelConfig, RunConfig, WindowConfig
 from mok_core.config.manifest import DatasetManifestRef, PRFSpec, RunManifest
 from mok_core.data import (
@@ -37,6 +34,9 @@ from mok_core.data import (
 )
 from mok_core.determinism import hash_named_tensors, per_tensor_digests
 from mok_core.model import MoKTransformer, build_reference_model
+from subnet.core.inner_loop import InnerLoop, WindowResult
+from subnet.core.phase import PhaseConfig, resolve_phase
+from subnet.core.zero1 import SingleProcessComm
 
 SEED = 9
 RUN_SEED = bytes(range(32))

@@ -142,7 +142,7 @@ class MoKRuntimeConfig(FrozenModel):
 
 
 class WindowConfig(FrozenModel):
-    """One outer-loop window (playbook step C: H=500 inner steps ~= 45 min)."""
+    """One outer-loop window (H=500 inner steps ~= 45 min)."""
 
     inner_steps: int = 500
     blocks_per_window: int = 225                 # ~45 min at 12 s/block
@@ -191,7 +191,7 @@ class CompressionConfig(FrozenModel):
 
 
 class OuterOptConfig(FrozenModel):
-    kind: Literal["nesterov", "sgd"] = "nesterov"   # calibration (step B) pins the final choice
+    kind: Literal["nesterov", "sgd"] = "nesterov"   # fleet calibration pins the final choice
     lr: float = 0.7
     momentum: float = 0.9
     clip: Literal["median_norm", "none"] = "median_norm"
@@ -203,9 +203,9 @@ class LRSpec(FrozenModel):
     kind: Literal["wsd_flat", "wsd_linear_decay", "const"] = "wsd_flat"
     peak_lr: float = 3e-4
     warmup_steps: int = 2000
-    # wsd_linear_decay: decay from peak to 0 across this many tokens (step D)
+    # wsd_linear_decay: decay from peak to 0 across this many tokens (quality anneal)
     decay_total_tokens: int | None = None
-    # const: fixed value (step E long-context phase)
+    # const: fixed value (long-context phase)
     const_lr: float | None = None
 
     @model_validator(mode="after")

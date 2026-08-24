@@ -15,10 +15,10 @@ import _synthetic as synth
 import pytest
 import torch
 
-from C.core.phase import resolve_phase
-from C.core.replay import PreconditionError, ReplayTask, WindowReplayer
-from C.core.window_runner import RunState, run_training_phase, shared_master_root
 from mok_core.chain.schemas import WindowCommit
+from subnet.core.phase import resolve_phase
+from subnet.core.replay import PreconditionError, ReplayTask, WindowReplayer
+from subnet.core.window_runner import RunState, run_training_phase, shared_master_root
 
 pytestmark = pytest.mark.usefixtures("mok_available")
 
@@ -33,7 +33,7 @@ def miner_window(dist_ctx, mok_available, toy_cfg, toy_dataset):
         pytest.skip(f"toy4L pins ep_size={toy_cfg.model.ep_size}; world_size={dist_ctx.world_size}")
     cfg = synth.load_toy_run_config(inner_steps=5)  # short window: replay runs it twice more
     phase = resolve_phase(toy_dataset.manifest, cfg, synth.WINDOW)
-    from C.core.window_runner import build_window_plan
+    from subnet.core.window_runner import build_window_plan
 
     plan = build_window_plan(
         toy_dataset.manifest,

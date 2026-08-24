@@ -1,4 +1,4 @@
-"""Tests for C/auditor — sampled bitwise replays over scripted miner artifacts.
+"""Tests for subnet/auditor — sampled bitwise replays over scripted miner artifacts.
 
 Reuses the app-test builders from test_app_miner.py. The scripted world:
 miner 3 mined window 0 (real training phase), leader validator 1 published the
@@ -19,12 +19,6 @@ import test_app_miner as tam
 import test_window_runner as twr
 import torch
 
-from C.auditor.app import AuditorApp
-from C.core.certificate import build_certificate
-from C.core.exchange import list_audit_reports, put_aggregator_object, put_certificate
-from C.core.replay import audit_sampler, verify_report
-from C.core.window_runner import _SelfCommit
-from C.miner.bootstrap import AUDITOR_COMMITMENT, LocalSigner
 from mok_core.chain.schemas import WindowCommit
 from mok_core.chain.windows import boundary_block
 from mok_core.config import RunConfig
@@ -33,6 +27,12 @@ from mok_core.data import DatasetShardIndex
 from mok_core.determinism import hash_named_tensors
 from mok_core.model import MoKTransformer, build_reference_model
 from mok_core.storage import StorageClient
+from subnet.auditor.app import AuditorApp
+from subnet.core.certificate import build_certificate
+from subnet.core.exchange import list_audit_reports, put_aggregator_object, put_certificate
+from subnet.core.replay import audit_sampler, verify_report
+from subnet.core.window_runner import _SelfCommit
+from subnet.miner.bootstrap import AUDITOR_COMMITMENT, LocalSigner
 
 A_UID = 7        # the auditor under test
 M_UID = 3        # the audited miner
@@ -356,8 +356,8 @@ def test_auditor_wall_budget_skips_tasks(
 def test_auditor_waits_out_a_pending_certificate(monkeypatch) -> None:
     """A down/lagging leader must stall the auditor, not crash it (the same
     guarantee the miner has): pending-certificate retries are unbounded."""
-    import C.auditor.app as app_mod
-    from C.core.checkpoint import CertificatePendingError
+    import subnet.auditor.app as app_mod
+    from subnet.core.checkpoint import CertificatePendingError
 
     calls = {"n": 0}
 
@@ -380,7 +380,7 @@ def test_auditor_waits_out_a_pending_certificate(monkeypatch) -> None:
 def test_align_replica_catches_up_to_resume_window(monkeypatch) -> None:
     """Checkpoint at w=100 (replica θ_start(101)) + state resume at 102 must
     catch up 101 BEFORE any replay (the window-102 PreconditionError crash)."""
-    import C.auditor.app as app_mod
+    import subnet.auditor.app as app_mod
 
     calls: list[tuple[int, int]] = []
 

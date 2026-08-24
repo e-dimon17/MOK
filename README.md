@@ -12,20 +12,20 @@ each playbook step maps to one top-level directory:
 
 | Dir | Playbook step | What it contains |
 |---|---|---|
-| `A/` | Data preparation | tokenizer training, corpus download/dedup/tokenize/pack, content-addressed 512 MB shards, Merkle manifest, R2 upload. CPU-only — runnable anywhere. |
-| `B/` | Fleet bring-up | hardware attestation (timed deterministic MoK challenge), model seed-init publication, miner onboarding CLI, calibration sweeps, the blessed container. |
-| `C/` | Bulk pretraining | **the subnet application**: `core/` (window protocol engine — SparseLoCo compression, deterministic replicated outer step, scoring, replay audit), `miner/`, `validator/`, `auditor/` role apps. |
-| `D/` | Quality anneal | manifest phase layer over `C` (premium data + LR decay → 0 across 400B tokens). |
-| `E/` | Context extension | manifest phase layer over `C` (seq 16,384, RoPE θ=5e5). |
-| `F/` | SFT | TRL-based supervised fine-tuning; DCP → HF conversion + custom `MokMoe` modeling files. |
-| `G/` | DPO + RLVR | TRL DPO and GRPO with vLLM rollouts and execution-checked math/code rewards. |
-| `H/` | Eval + release | lm-eval harness, provenance bundle (manifest + per-window state roots + signed audit log + replay script), HF upload. |
+| `dataprep/` | Data preparation | tokenizer training, corpus download/dedup/tokenize/pack, content-addressed 512 MB shards, Merkle manifest, R2 upload. CPU-only — runnable anywhere. |
+| `fleet/` | Fleet bring-up | hardware attestation (timed deterministic MoK challenge), model seed-init publication, miner onboarding CLI, calibration sweeps, the blessed container. |
+| `subnet/` | Bulk pretraining | **the subnet application**: `core/` (window protocol engine — SparseLoCo compression, deterministic replicated outer step, scoring, replay audit), `miner/`, `validator/`, `auditor/` role apps. |
+| `anneal/` | Quality anneal | manifest phase layer over `subnet/` (premium data + LR decay → 0 across 400B tokens). |
+| `context/` | Context extension | manifest phase layer over `subnet/` (seq 16,384, RoPE θ=5e5). |
+| `sft/` | SFT | TRL-based supervised fine-tuning; DCP → HF conversion + custom `MokMoe` modeling files. |
+| `rl/` | DPO + RLVR | TRL DPO and GRPO with vLLM rollouts and execution-checked math/code rewards. |
+| `release/` | Eval + release | lm-eval harness, provenance bundle (manifest + per-window state roots + signed audit log + replay script), HF upload. |
 | `mok_core/` | — | shared library: config schemas + on-chain manifest, determinism primitives (state roots), MoK model stack, deterministic data pipeline, chain (bittensor SDK) and storage (R2) clients, telemetry. |
 
 ## Install
 
 ```bash
-# CPU-side development (steps A + all pure-logic tests):
+# CPU-side development (dataprep + all pure-logic tests):
 pip install -e ".[data,dev]"
 
 # On an 8×B300 node (SM103 only — the MoK kernel refuses anything else):
@@ -52,7 +52,7 @@ deterministic megakernel for the MoE layer, and a deterministic outer step
 applied by every node over the leader-certified peer set. The blake2b
 `state_root` of the master weights is committed on-chain each window; auditors
 replay sampled windows on identical hardware and slash on hash mismatch
-(2-of-3 quorum). See `C/core/replay.py`.
+(2-of-3 quorum). See `subnet/core/replay.py`.
 
 ## Provenance
 
@@ -62,7 +62,7 @@ decentralized runs. The layers that define this subnet — bitwise replay audits
 hardware attestation, window certificates, Merkle data manifests, and the MoK
 model stack — are original to this project, Apache-2.0.
 
-## Known risks tracked for calibration (step B)
+## Known risks tracked for calibration (fleet)
 
 1. Adam-reset-per-window vs training dynamics — A/B during calibration; fallback: reset every K=5 windows (audits then replay ≤5).
 2. torch.compile determinism at 54B — max-autotune banned, inductor cache baked into the container; verified at GPU milestone 1.
@@ -82,8 +82,8 @@ Pure logic with mocked chain/storage (moto S3, MagicMock subtensor): Merkle +
 PRF + payload/state-root golden vectors (consensus constants — changing one is
 a `SPEC_VERSION` bump), compression round-trips, deterministic outer-step
 lockstep, full loopback windows on the reference backend, replay fraud
-detection, phase/LR closed forms including the D/E boundaries and the
-release-fork procedure (`tests/unit/test_release_fork.py`), F/G/H post-training
+detection, phase/LR closed forms including the anneal/context phase boundaries and the
+release-fork procedure (`tests/unit/test_release_fork.py`), post-training
 and provenance logic. GPU tests are *collected* (and must import cleanly) but
 deselected; verify collection on any CPU host with:
 
@@ -105,7 +105,7 @@ torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_04_compile_cac
 torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_05_checkpoint_dcp.py -m gpu -q # multi-rank DCP round-trip + catch_up on GPU tensors
 torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_06_self_replay.py -m gpu -q   # LAUNCH GATE (see below)
 torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_07_memory_54b.py -m gpu -q    # 54B meta-device param audit; MOK_TEST_54B=1 adds the real-allocation smoke
-torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_08_attestation.py -m gpu -q   # step-B attestation: run_reference == derive_expected + deadline sanity
+torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu/test_08_attestation.py -m gpu -q   # fleet attestation: run_reference == derive_expected + deadline sanity
 ```
 
 Tests skip (never fake-pass) when their prerequisite is absent: no torchrun
@@ -132,15 +132,15 @@ machines, which is what makes audits meaningful:
    the fixed consensus seeds (`tests/gpu/_synthetic.py` is the reference
    driver: `torchrun --standalone --nproc-per-node=8 tests/gpu/_synthetic.py
    --data-dir <shards>` prints `STATE_ROOT=<hex>`), checkpoint θ_start via
-   `C.core.checkpoint.Checkpointer` before training, and record the window's
+   `subnet.core.checkpoint.Checkpointer` before training, and record the window's
    `WindowCommit` fields (θ_start `state_root`, `theta_end_hash`).
 2. **Ship to Node B:** the θ_start checkpoint directory, the run manifest, the
    RunConfig YAML, and the commit. (In production auditors get all of this
    from R2 + chain; here you copy it.)
-3. **Node B (auditor):** replay the window with the CLI over `C.core.replay`:
+3. **Node B (auditor):** replay the window with the CLI over `subnet.core.replay`:
 
    ```bash
-   python -m H.replay_window --manifest manifest.json --config C/configs/base.yaml \
+   python -m release.replay_window --manifest manifest.json --config subnet/configs/base.yaml \
        --window <W> --miner-uid <UID> --theta-start <ckpt-dir> --backend mok --out report.json
    ```
 

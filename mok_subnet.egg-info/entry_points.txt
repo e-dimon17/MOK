@@ -1,12 +1,12 @@
 [console_scripts]
-mok-attest = B.cli:attest_main
-mok-auditor = C.auditor.main:main
-mok-calibrate = B.cli:calibrate_main
-mok-data = A.cli:main
-mok-eval = H.run_evals:main
-mok-init-publish = B.cli:init_publish_main
-mok-miner = C.miner.main:main
-mok-onboard = B.cli:onboard_main
-mok-rl = G.grpo_train:main
-mok-sft = F.sft_train:main
-mok-validator = C.validator.main:main
+mok-attest = fleet.cli:attest_main
+mok-auditor = subnet.auditor.main:main
+mok-calibrate = fleet.cli:calibrate_main
+mok-data = dataprep.cli:main
+mok-eval = release.run_evals:main
+mok-init-publish = fleet.cli:init_publish_main
+mok-miner = subnet.miner.main:main
+mok-onboard = fleet.cli:onboard_main
+mok-rl = rl.grpo_train:main
+mok-sft = sft.sft_train:main
+mok-validator = subnet.validator.main:main

@@ -1,4 +1,0 @@
-# Step C bulk-pretraining overlay: the defaults in base.yaml ARE the bulk phase.
-# This overlay exists so every phase names its data tree explicitly.
-data:
-  dataset_manifest_path: manifests/bulk.json

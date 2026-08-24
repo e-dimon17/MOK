@@ -1,6 +1,6 @@
 """Merkle tree over blake2b-256 leaf hashes — the dataset commitment.
 
-Step A commits `merkle_root` in the on-chain `DatasetManifestRef`; every node
+Dataprep commits `merkle_root` in the on-chain `DatasetManifestRef`; every node
 verifies downloaded shards against it, and audit reports carry inclusion
 proofs. Wire rules (golden-vector pinned, SPEC_VERSION-bound):
   - leaves are 32-byte blake2b-256 digests (of raw shard file bytes)

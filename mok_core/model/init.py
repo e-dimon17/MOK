@@ -5,7 +5,7 @@ pins all RNG, then parameters are initialized in a FIXED layer order (module
 definition order), each drawn into an fp32 staging buffer and copied into the
 master dtype — so the draw sequence is independent of parameter dtype. Two
 processes calling with the same seed produce identical state_roots (the
-publisher's seed-42 init in step B relies on this).
+publisher's seed-42 init relies on this).
 
 Scheme: truncated normal (±2σ) std 0.02 for embeddings, QKV, gate/up and the
 LM head; std 0.02/sqrt(2·num_layers) for residual-facing projections (attention

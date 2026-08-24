@@ -22,15 +22,15 @@ import _synthetic as synth
 import pytest
 import torch
 
-from C.core.checkpoint import Checkpointer, CheckpointMeta
-from C.core.compress import ChunkingTransformer, Quantizer, TopKCompressor
-from C.core.exchange import CertifiedGather
-from C.core.outer_opt import ReplicatedOuterStep
-from C.core.payload import PayloadMeta, WindowPayload
-from C.core.window_runner import DENSE_SUFFIX
 from mok_core.config import RunConfig
 from mok_core.config.schemas import BucketCreds
 from mok_core.determinism import hash_named_tensors
+from subnet.core.checkpoint import Checkpointer, CheckpointMeta
+from subnet.core.compress import ChunkingTransformer, Quantizer, TopKCompressor
+from subnet.core.exchange import CertifiedGather
+from subnet.core.outer_opt import ReplicatedOuterStep
+from subnet.core.payload import PayloadMeta, WindowPayload
+from subnet.core.window_runner import DENSE_SUFFIX
 
 PEER_UID = 7
 
@@ -122,7 +122,7 @@ def _fabricate_certified_window(
 ) -> tuple[Any, CertifiedGather]:
     """A deterministic one-peer certified window: seeded pseudo-gradients,
     compressed with the run's own compression config."""
-    from C.core.certificate import WindowCertificate
+    from subnet.core.certificate import WindowCertificate
 
     comp_names = sorted(n for n in model_params if not n.endswith(DENSE_SUFFIX))
     compressor = TopKCompressor(
@@ -182,7 +182,7 @@ class _FakeExchange:
 
 
 def test_catch_up_one_fabricated_window_on_gpu_tensors(dist_ctx, gpu_model, toy_cfg, toy_dataset) -> None:
-    from C.core.checkpoint import catch_up
+    from subnet.core.checkpoint import catch_up
 
     model_params = dict(gpu_model.iter_master_params())
     assert all(t.is_cuda for t in model_params.values())

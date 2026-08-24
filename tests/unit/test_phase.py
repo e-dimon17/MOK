@@ -1,10 +1,9 @@
-"""Tests for C/core/phase.py — cumulative phase resolution, closed-form LR, accum ramp."""
+"""Tests for subnet/core/phase.py — cumulative phase resolution, closed-form LR, accum ramp."""
 
 from __future__ import annotations
 
 import pytest
 
-from C.core.phase import PhaseConfig, accum_at, lr_at, resolve_phase
 from mok_core.config import (
     DatasetManifestRef,
     LRSpec,
@@ -15,6 +14,7 @@ from mok_core.config import (
     RunManifest,
     WindowConfig,
 )
+from subnet.core.phase import PhaseConfig, accum_at, lr_at, resolve_phase
 
 CFG = RunConfig()
 TPS = CFG.tokens_per_inner_step  # 8192 * 8 * 8 = 524288

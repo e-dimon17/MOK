@@ -1,4 +1,4 @@
-"""CPU tests for D/release_fork.py — the interim-release fork procedure.
+"""CPU tests for anneal/release_fork.py — the interim-release fork procedure.
 
 The fork is a pure manifest operation: given a lineage checkpoint's meta.json
 and the run's (manifest, config), it must append exactly one phase amendment
@@ -15,10 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from C.core.checkpoint import CheckpointMeta
-from C.core.phase import lr_at, resolve_phase
-from C.core.window_runner import run_state_at
-from D.release_fork import (
+from anneal.release_fork import (
     MANIFEST_FILENAME,
     RUNBOOK_FILENAME,
     ForkError,
@@ -37,6 +34,9 @@ from mok_core.config import (
 from mok_core.config.canonical import canonical_bytes, config_hash
 from mok_core.config.manifest import DatasetManifestRef, PRFSpec, RunManifest
 from mok_core.determinism import hash_bytes
+from subnet.core.checkpoint import CheckpointMeta
+from subnet.core.phase import lr_at, resolve_phase
+from subnet.core.window_runner import run_state_at
 
 RUN_SEED = bytes(range(32))
 CKPT_WINDOW = 9            # checkpoint holds θ_start(10)

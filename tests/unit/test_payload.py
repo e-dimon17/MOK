@@ -1,4 +1,4 @@
-"""Unit tests for C/core/payload.py — wire format, hashing, validation, ownership."""
+"""Unit tests for subnet/core/payload.py — wire format, hashing, validation, ownership."""
 
 from __future__ import annotations
 
@@ -8,14 +8,15 @@ import pytest
 import torch
 import zstandard
 
-from C.core.compress import (
+from mok_core.config.canonical import canonical_bytes
+from subnet.core.compress import (
     ChunkingTransformer,
     Quantizer,
     TopKCompressor,
     pack_2bit_values,
     pack_12bit_indices,
 )
-from C.core.payload import (
+from subnet.core.payload import (
     MAGIC,
     WIRE_VERSION,
     PayloadError,
@@ -27,7 +28,6 @@ from C.core.payload import (
     serialize,
     validate_structure,
 )
-from mok_core.config.canonical import canonical_bytes
 
 TARGET_CHUNK = 4
 TOPK = 3

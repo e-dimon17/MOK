@@ -1,4 +1,4 @@
-"""Tests for C/validator — the validator application over scripted miner artifacts.
+"""Tests for subnet/validator — the validator application over scripted miner artifacts.
 
 Reuses the app-test builders from test_app_miner.py (imported, not re-run):
 two scripted miners produce window-0 artifacts via the REAL training phase;
@@ -20,20 +20,20 @@ import test_app_miner as tam
 import test_window_runner as twr
 import torch
 
-from C.core.certificate import WindowCertificate, certificate_message
-from C.core.exchange import get_aggregator_object, put_audit_report, put_debug_slices
-from C.core.replay import AuditReport, sign_report
-from C.core.slashing import SlashLedger
-from C.miner.bootstrap import AUDITOR_COMMITMENT, LocalSigner, LoopbackClock
-from C.validator.app import SPIKE_THRESHOLD_ENV, ValidatorApp, ValidatorState, resolve_spike_threshold
-from C.validator.audit_ingest import ingest_window_audits
-from C.validator.leader import LeaderDuties
-from C.validator.weights import submit_weights, weights_for
 from mok_core.chain.schemas import WindowCommit
 from mok_core.data import DatasetShardIndex
 from mok_core.determinism import hash_named_tensors
 from mok_core.model import MoKTransformer, build_reference_model
 from mok_core.storage import StorageClient, keys
+from subnet.core.certificate import WindowCertificate, certificate_message
+from subnet.core.exchange import get_aggregator_object, put_audit_report, put_debug_slices
+from subnet.core.replay import AuditReport, sign_report
+from subnet.core.slashing import SlashLedger
+from subnet.miner.bootstrap import AUDITOR_COMMITMENT, LocalSigner, LoopbackClock
+from subnet.validator.app import SPIKE_THRESHOLD_ENV, ValidatorApp, ValidatorState, resolve_spike_threshold
+from subnet.validator.audit_ingest import ingest_window_audits
+from subnet.validator.leader import LeaderDuties
+from subnet.validator.weights import submit_weights, weights_for
 
 V_UID = 1
 MINERS = (3, 5)
@@ -367,8 +367,8 @@ def test_per_chunk_indices_shape_and_memory(template_model, index, data_dir):
     """Overlap inputs must be canonical (n_chunks, k) — never param-flat lists,
     whose K×K comparison would be quadratic in the param size (1 TiB at ~1M
     indices; the window-85 validator crash)."""
-    from C.core.overlap import index_overlap_report
-    from C.validator.app import _per_chunk_indices
+    from subnet.core.overlap import index_overlap_report
+    from subnet.validator.app import _per_chunk_indices
 
     cfg = tam.make_app_cfg()
     manifest = tam.make_app_manifest(index, template_model)
@@ -391,7 +391,7 @@ def test_per_chunk_indices_shape_and_memory(template_model, index, data_dir):
 def test_align_replica_catches_up_to_resume_window(monkeypatch) -> None:
     """Same invariant as the auditor: never process a window with a stale
     replica — a wrong theta_start would go into an immutable certificate."""
-    import C.validator.app as app_mod
+    import subnet.validator.app as app_mod
 
     calls: list[tuple[int, int]] = []
 
@@ -425,11 +425,11 @@ def test_owner_validator_restores_manifest_commit_after_rollback_vote(tmp_path: 
     vote concludes (here: activated) — otherwise no node can bootstrap."""
     from types import SimpleNamespace
 
-    from C.core.checkpoint import Checkpointer
-    from C.core.rollback import RollbackStateMachine, SpikeDetector
-    from C.miner.bootstrap import OWNER_UID, ScriptedChain
     from mok_core.chain.schemas import ManifestCommit, VoteCommit, decode_commitment
     from mok_core.config.schemas import RollbackConfig
+    from subnet.core.checkpoint import Checkpointer
+    from subnet.core.rollback import RollbackStateMachine, SpikeDetector
+    from subnet.miner.bootstrap import OWNER_UID, ScriptedChain
 
     manifest_hash = "ab" * 32
     clock = LoopbackClock(genesis=0.0, window_s=10.0, now_ts=1.0)

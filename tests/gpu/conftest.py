@@ -84,7 +84,7 @@ def dist_ctx() -> Any:
 
     import torch.distributed as dist
 
-    from C.core.window_runner import TorchDistRunnerComm
+    from subnet.core.window_runner import TorchDistRunnerComm
 
     local_rank = int(os.environ.get("LOCAL_RANK", os.environ["RANK"]))
     if local_rank >= torch.cuda.device_count():
@@ -132,7 +132,7 @@ def mok_available() -> Any:
 
 @pytest.fixture(scope="session")
 def toy_cfg() -> RunConfig:
-    """C/configs/base.yaml + toy4L.yaml through the real loader (CPU-safe)."""
+    """subnet/configs/base.yaml + toy4L.yaml through the real loader (CPU-safe)."""
     return synth.load_toy_run_config()
 
 

@@ -1,4 +1,4 @@
-# MOK Subnet Operator Guide — Step by Step, A to H
+# MOK Subnet Operator Guide — Step by Step
 
 This is the practical manual: what to run, in what order, on which machine,
 and what you should see. It assumes no prior knowledge of the codebase.
@@ -13,29 +13,29 @@ There are four roles. You (the project owner) play the first one; other people
 
 | Role | Hardware | What they do |
 |---|---|---|
-| **Owner** | any CPU machine + occasional GPU rental | prepares the dataset (A), publishes the run manifest and initial model (B), runs post-training and releases (F–H) |
-| **Miner** | 8× B300 (SM103) NVLink node | trains: runs windows, uploads compressed gradients (C–E) |
-| **Scoring validator** | 1× H200/B200-class GPU (≥141 GB) | scores miners' gradients by loss improvement, sets chain weights (C) |
-| **Audit validator** | 8× B300 node (identical to miners) | replays sampled miner windows bitwise; a hash mismatch = slash (C) |
+| **Owner** | any CPU machine + occasional GPU rental | prepares the dataset (`dataprep/`), publishes the run manifest and initial model (`fleet/`), runs post-training and releases (`sft/`–`release/`) |
+| **Miner** | 8× B300 (SM103) NVLink node | trains: runs windows, uploads compressed gradients (`subnet/`, `anneal/`, `context/`) |
+| **Scoring validator** | 1× H200/B200-class GPU (≥141 GB) | scores miners' gradients by loss improvement, sets chain weights (`subnet/`) |
+| **Audit validator** | 8× B300 node (identical to miners) | replays sampled miner windows bitwise; a hash mismatch = slash (`subnet/`) |
 
 The lifecycle in one line:
 
 ```
-A (freeze data) → B (bring up fleet) → C (bulk pretraining, weeks)
-→ D (quality anneal, days) → E (16k context, ~1 day)
-→ F (SFT) → G (DPO + RLVR) → H (evaluate + release)      ← owner side, per release
+dataprep (freeze data) → fleet (bring-up) → subnet (bulk pretraining, weeks)
+→ anneal (quality anneal, days) → context (16k context, ~1 day)
+→ sft (SFT) → rl (DPO + RLVR) → release (evaluate + release)   ← owner side, per release
 ```
 
 ### Server requirements at a glance
 
-| Step | Machine class | Count |
+| Stage | Machine class | Count |
 |---|---|---|
-| A | big CPU box (no GPU) | 1 |
-| B | 1× Tier-A GPU node (owner) + each miner's own Tier-A node | 1 + fleet |
-| C–E | miners: Tier-A · scoring validators: 1× ≥141 GB GPU · auditors: Tier-A | 15–25 + 2–3 + 3 |
-| F | 1–2× 8-GPU nodes (H200-class or better — B300 not required) | 1–2 |
-| G | 1 training node + 1–3 vLLM rollout nodes | 2–4 |
-| H | 1× node with ≥141 GB GPU (evals); any CPU (provenance) | 1 |
+| `dataprep` | big CPU box (no GPU) | 1 |
+| `fleet` | 1× Tier-A GPU node (owner) + each miner's own Tier-A node | 1 + fleet |
+| `subnet`–`context` | miners: Tier-A · scoring validators: 1× ≥141 GB GPU · auditors: Tier-A | 15–25 + 2–3 + 3 |
+| `sft` | 1–2× 8-GPU nodes (H200-class or better — B300 not required) | 1–2 |
+| `rl` | 1 training node + 1–3 vLLM rollout nodes | 2–4 |
+| `release` | 1× node with ≥141 GB GPU (evals); any CPU (provenance) | 1 |
 
 **"Tier-A node"** (the standardized miner/auditor unit, enforced by
 `mok-onboard`'s preflight): **8× NVIDIA B300 (SM103)** in one NVLink domain,
@@ -43,8 +43,9 @@ A (freeze data) → B (bring up fleet) → C (bulk pretraining, weeks)
 for shards + checkpoints, ≥1 Gbps symmetric internet, Linux + the blessed
 container. Own (~$300–500k) or rent (~$25–50k/month cloud).
 
-Steps C, D, E are the *same program* — D and E only change the on-chain
-manifest phase. Steps A, F, G, H are owner-side tools, not subnet protocol.
+`subnet`, `anneal`, and `context` are the *same program* — the anneal and
+context stages only change the on-chain manifest phase. `dataprep`, `sft`,
+`rl`, and `release` are owner-side tools, not subnet protocol.
 
 ---
 
@@ -57,7 +58,7 @@ manifest phase. Steps A, F, G, H are owner-side tools, not subnet protocol.
   pair (committed on-chain so peers can fetch from you).
 - **Bittensor wallet**: install `btcli`, create a coldkey + hotkey
   (`btcli wallet create`). You need a small amount of TAO to register.
-- Optional: **HuggingFace token** (step A downloads, step H uploads),
+- Optional: **HuggingFace token** (dataprep downloads, release uploads),
   **Weights & Biases key** (dashboards).
 
 ### 1.2 Install
@@ -67,13 +68,13 @@ cd /workspace/MOK
 cp .env.example .env        # fill in R2_*, BT_*, HF_TOKEN — see comments in the file
 python3.12 -m venv .venv && source .venv/bin/activate
 
-# CPU machine (owner tools, step A, all CPU tests):
+# CPU machine (owner tools, dataprep, all CPU tests):
 pip install -e ".[data,dev]"
 
 # GPU node (miner / auditor — SM103 only; the MoK kernel refuses other GPUs):
 pip install -e ".[gpu,dev]" --no-build-isolation
 
-# Post-training machine (steps F/G/H):
+# Post-training machine (sft/rl/release):
 pip install -e ".[post,dev]"
 ```
 
@@ -88,12 +89,12 @@ pytest -q          # expect: 1110 passed
 Everything consensus-critical (data, configs, container image, seeds) is
 **frozen and hashed** before the run starts. If a command asks for a hash or a
 manifest, it is protecting you from silently diverging from the fleet. Never
-edit `C/configs/base.yaml` after the run has started — changes go through
-manifest amendments (see step D).
+edit `subnet/configs/base.yaml` after the run has started — changes go through
+manifest amendments (see §5, quality anneal).
 
 ---
 
-## 2. Step A — Prepare the dataset (owner · CPU machine · ~days)
+## 2. `dataprep/` — Prepare the dataset (owner · CPU machine · ~days)
 
 **Server requirements (no GPU at all):**
 
@@ -128,20 +129,20 @@ bulk corpus; each stage is resumable):
 SPOOL=/data/spool; TOK=/data/tokens; SHARDS=/data/shards
 
 # 1. Download the sources listed in the corpus config (FineWeb-Edu, DCLM, code, math)
-mok-data download --corpus-config A/configs/corpus_bulk.yaml --spool-dir $SPOOL
+mok-data download --corpus-config dataprep/configs/corpus_bulk.yaml --spool-dir $SPOOL
 
 # 2. Cross-source dedup
-mok-data dedup --corpus-config A/configs/corpus_bulk.yaml --spool-dir $SPOOL --out-dir $SPOOL-dedup
+mok-data dedup --corpus-config dataprep/configs/corpus_bulk.yaml --spool-dir $SPOOL --out-dir $SPOOL-dedup
 
 # 3. Train the frozen 65k tokenizer (once, ever — it is part of the consensus)
-mok-data tokenizer --corpus-config A/configs/corpus_bulk.yaml \
+mok-data tokenizer --corpus-config dataprep/configs/corpus_bulk.yaml \
   --spool-dir $SPOOL-dedup --out tokenizer.json
 
 # 4. Tokenize + 5. pack into shards + 6. build the Merkle manifest
-mok-data tokenize --corpus-config A/configs/corpus_bulk.yaml \
+mok-data tokenize --corpus-config dataprep/configs/corpus_bulk.yaml \
   --spool-dir $SPOOL-dedup --tokenizer tokenizer.json --out-dir $TOK
-mok-data shard   --corpus-config A/configs/corpus_bulk.yaml --tokens-dir $TOK --out-dir $SHARDS
-mok-data manifest --corpus-config A/configs/corpus_bulk.yaml --out-dir $SHARDS --tokenizer tokenizer.json
+mok-data shard   --corpus-config dataprep/configs/corpus_bulk.yaml --tokens-dir $TOK --out-dir $SHARDS
+mok-data manifest --corpus-config dataprep/configs/corpus_bulk.yaml --out-dir $SHARDS --tokenizer tokenizer.json
 
 # 7. Upload to your R2 bucket (resumable; uses R2_* env vars)
 mok-data upload --data-dir $SHARDS
@@ -150,13 +151,13 @@ mok-data upload --data-dir $SHARDS
 mok-data verify --data-dir $SHARDS
 ```
 
-Repeat with `A/configs/corpus_anneal.yaml` for the step-D anneal tree.
+Repeat with `dataprep/configs/corpus_anneal.yaml` for the anneal tree.
 **Outputs to keep safe:** `tokenizer.json`, `manifest.json`, `shard_index.json`
-— their hashes go into the run manifest in step B.
+— their hashes go into the run manifest at fleet bring-up.
 
 ---
 
-## 3. Step B — Bring up the fleet (owner + miners · first GPU money)
+## 3. `fleet/` — Bring up the fleet (owner + miners · first GPU money)
 
 **Server requirements:**
 
@@ -173,7 +174,7 @@ model, verifies each miner's hardware, and calibrates the kernel settings.
 ### 3.1 Owner: build the container
 
 ```bash
-docker build -t mok-subnet:stage2 -f B/container/Dockerfile .
+docker build -t mok-subnet:stage2 -f fleet/container/Dockerfile .
 docker inspect --format='{{index .RepoDigests 0}}' mok-subnet:stage2
 # record the sha256 digest — it goes in the manifest; every node must run this exact image
 ```
@@ -183,7 +184,7 @@ docker inspect --format='{{index .RepoDigests 0}}' mok-subnet:stage2
 On one GPU node (or CPU with `--backend reference` for testnet rehearsal):
 
 ```bash
-mok-init-publish --config C/configs/base.yaml --local-dir checkpoints \
+mok-init-publish --config subnet/configs/base.yaml --local-dir checkpoints \
   --seed 42 --backend mok --device cuda
 # prints the init state_root — this hash goes on-chain; every miner verifies against it
 ```
@@ -191,12 +192,12 @@ mok-init-publish --config C/configs/base.yaml --local-dir checkpoints \
 Then create the run manifest (run seed, dataset Merkle roots, config hash,
 container digest, start block) and commit its hash on-chain. The manifest JSON
 is built with `mok_core.config.build_manifest` — a worked example is in
-`B/onboarding/init_publish.py`'s docstring.
+`fleet/onboarding/init_publish.py`'s docstring.
 
 ### 3.3 Miner: onboard (each miner runs this once)
 
 ```bash
-mok-onboard --config C/configs/base.yaml
+mok-onboard --config subnet/configs/base.yaml
 # runs in order: hardware preflight (8×B300, NVLink, RAM, disk)
 # → wallet check → subnet registration → R2 bucket credential commit
 # → download + verify the init checkpoint → self-attestation
@@ -217,9 +218,9 @@ mok-attest verify --challenge challenge.json --response response.json \
 ### 3.4 Owner: calibrate (on one rented node, before mainnet)
 
 ```bash
-mok-calibrate rehearse --config C/configs/base.yaml ...   # loopback windows + determinism check
-mok-calibrate sweep --config C/configs/base.yaml ...      # writes C/configs/mok_tuned.yaml
-mok-calibrate adam-ab --config C/configs/base.yaml ...    # pins the Adam-reset policy
+mok-calibrate rehearse --config subnet/configs/base.yaml ...   # loopback windows + determinism check
+mok-calibrate sweep --config subnet/configs/base.yaml ...      # writes subnet/configs/mok_tuned.yaml
+mok-calibrate adam-ab --config subnet/configs/base.yaml ...    # pins the Adam-reset policy
 ```
 
 **Gate:** before real money, run the GPU test suite on the node —
@@ -229,7 +230,7 @@ the README's Testing section explains the two-node replay gate.
 
 ---
 
-## 4. Step C — The training run (everyone · weeks)
+## 4. `subnet/` — The training run (everyone · weeks)
 
 **Server requirements (per participant, for the whole run):**
 
@@ -244,17 +245,17 @@ the README's Testing section explains the two-node replay gate.
 the miners will produce honest mismatches and slash innocent people.
 
 Each role starts its long-running process (inside the container; the
-`C/scripts/*.sh` wrappers do the `torchrun` incantation for you):
+`subnet/scripts/*.sh` wrappers do the `torchrun` incantation for you):
 
 ```bash
 # Miner (8 GPUs):
-bash C/scripts/run_miner.sh                 # = torchrun -n 8 -m C.miner.main --config ... --overlay ...
+bash subnet/scripts/run_miner.sh                 # = torchrun -n 8 -m subnet.miner.main --config ... --overlay ...
 
 # Scoring validator (1 GPU):
-bash C/scripts/run_validator.sh
+bash subnet/scripts/run_validator.sh
 
 # Audit validator (8 GPUs):
-bash C/scripts/run_auditor.sh
+bash subnet/scripts/run_auditor.sh
 ```
 
 Useful flags (all roles): `--network test|finney`, `--netuid N`,
@@ -278,9 +279,9 @@ vote (validators handle it; miners just follow the manifest).
 
 ---
 
-## 5. Step D — Quality anneal (subnet · ~4 days)
+## 5. `anneal/` — Quality anneal (subnet · ~4 days)
 
-**Server requirements:** identical to step C — same fleet, same roles, no
+**Server requirements:** identical to the training run — same fleet, same roles, no
 change (that is the point of the phase-amendment design). Miners additionally
 download the anneal shard tree (~50–100 GB per miner) before the boundary.
 
@@ -289,8 +290,8 @@ Still pretraining — only the data tree and LR schedule change, via an on-chain
 (e.g., v0.9 at ~1.5T tokens) while the main branch keeps training:
 
 ```bash
-python -m D.release_fork --checkpoint checkpoints/w00003000 \
-  --manifest manifest.json --config C/configs/base.yaml \
+python -m anneal.release_fork --checkpoint checkpoints/w00003000 \
+  --manifest manifest.json --config subnet/configs/base.yaml \
   --decay-tokens 150000000000 --effective-window 3010 \
   --committed-block <block> --out release-v0.9/
 # writes the forked manifest + RELEASE_FORK.md (the operator runbook for the fork)
@@ -298,23 +299,23 @@ python -m D.release_fork --checkpoint checkpoints/w00003000 \
 
 The end-of-run anneal is the same amendment with `--decay-tokens 400000000000`
 and the anneal dataset. Miners need no action — the phase table tells their
-running processes what to do. Local rehearsal: `bash D/scripts/run_miner.sh`.
+running processes what to do. Local rehearsal: `bash anneal/scripts/run_miner.sh`.
 
-## 6. Step E — Context extension to 16k (subnet · ~1 day)
+## 6. `context/` — Context extension to 16k (subnet · ~1 day)
 
-**Server requirements:** identical to step C. The 16k workspace adds ~1–2 GB
+**Server requirements:** identical to the training run. The 16k workspace adds ~1–2 GB
 HBM per GPU (new MoK buffers) and attention activations grow ~4× per
 sequence — both fit inside the Tier-A node's existing ~80 GB/GPU headroom.
 
-Another phase amendment (`E/configs/context16k.yaml` holds the values:
+Another phase amendment (`context/configs/context16k.yaml` holds the values:
 seq 16384, RoPE θ=500k, new workspace shape). This one sets
 `requires_restart: true` — miner processes exit cleanly at the boundary and
 their supervisor (docker compose restart policy) relaunches them; the new MoK
-workspace materializes automatically. Rehearsal: `bash E/scripts/run_miner.sh`.
+workspace materializes automatically. Rehearsal: `bash context/scripts/run_miner.sh`.
 
 ---
 
-## 7. Step F — SFT (owner · 1–2 GPU nodes · ~1 week)
+## 7. `sft/` — SFT (owner · 1–2 GPU nodes · ~1 week)
 
 **Server requirements:** post-training runs on **standard HF kernels — B300 is
 NOT required** (any modern 8-GPU node works). Full fine-tuning of 54B needs
@@ -327,41 +328,41 @@ weights + grads + Adam ≈ 900 GB across the FSDP group:
 
 ```bash
 # 1. Convert the annealed checkpoint to a HuggingFace model
-python -m F.convert_dcp_to_hf checkpoints/w00005000 hf-base/ --tokenizer tokenizer.json
+python -m sft.convert_dcp_to_hf checkpoints/w00005000 hf-base/ --tokenizer tokenizer.json
 
 # 2. THE PARITY GATE — never skip this
-python -m F.verify_conversion checkpoints/w00005000 hf-base/
+python -m sft.verify_conversion checkpoints/w00005000 hf-base/
 # expect: max logit diff < 2e-2 and >99% argmax agreement; failure = stop and debug
 
-# 3. Train (config: F/configs/sft.yaml — datasets, 2 epochs, seq 16k)
-mok-sft --config F/configs/sft.yaml
+# 3. Train (config: sft/configs/sft.yaml — datasets, 2 epochs, seq 16k)
+mok-sft --config sft/configs/sft.yaml
 
 # 4. Pick the best checkpoint by instruction-following probes
-python -m F.eval_select <output-dir>
+python -m sft.eval_select <output-dir>
 ```
 
-## 8. Step G — DPO + RLVR (owner · 2–4 GPU nodes · 1–2 weeks)
+## 8. `rl/` — DPO + RLVR (owner · 2–4 GPU nodes · 1–2 weeks)
 
 **Server requirements:**
 
 | | Spec |
 |---|---|
-| DPO training | same as step F training (policy + frozen reference model ⇒ prefer the 2-node option or ZeRO-3 offload on 1 node) |
-| GRPO training | 1× step-F-class node |
+| DPO training | same as SFT training (policy + frozen reference model ⇒ prefer the 2-node option or ZeRO-3 offload on 1 node) |
+| GRPO training | 1× SFT-class node |
 | vLLM rollout servers | 1–3 nodes, each **1–2× ≥141 GB GPUs** (the model serves at 5.5B-active cost; ~108 GB bf16 weights per replica) |
 | Code-reward sandbox | CPU on the training node (bubblewrap/nsjail if available; rlimit fallback otherwise) — 32+ spare cores recommended |
 
 ```bash
-# 1. DPO (cheap alignment gain; config: G/configs/dpo.yaml)
-python -m G.dpo_train --config G/configs/dpo.yaml
+# 1. DPO (cheap alignment gain; config: rl/configs/dpo.yaml)
+python -m rl.dpo_train --config rl/configs/dpo.yaml
 
 # 2. RLVR — start vLLM rollout servers on 1–3 nodes, then:
-mok-rl --config G/configs/grpo.yaml
+mok-rl --config rl/configs/grpo.yaml
 # rewards are execution-checked: math answers via symbolic equivalence,
 # code via sandboxed unit tests — this is where GSM8K/HumanEval jump
 ```
 
-## 9. Step H — Evaluate + release (owner · 1 node · ~1 week)
+## 9. `release/` — Evaluate + release (owner · 1 node · ~1 week)
 
 **Server requirements:**
 
@@ -378,18 +379,18 @@ mok-eval --model-path hf-chat/ --backend vllm --out evals.json --markdown-out ev
 
 # 2. Build the provenance bundle — the artifact no other model release has
 python - <<'PY'
-from H.provenance import build_bundle   # see its docstring for the full call
+from release.provenance import build_bundle   # see its docstring for the full call
 PY
 
 # 3. Verify the bundle offline (anyone can do this — that's the point)
-python -m H.verify_bundle release-bundle/            # expect: ok
+python -m release.verify_bundle release-bundle/            # expect: ok
 
 # 4. Anyone can replay any window from the bundle:
-python -m H.replay_window --bundle release-bundle/ --window 1234 --miner-uid 7 \
+python -m release.replay_window --bundle release-bundle/ --window 1234 --miner-uid 7 \
   --theta-start <checkpoint-dir>                      # exit 0 iff bitwise match
 
 # 5. Publish
-python -m H.hf_upload   # dry-run mode first; uploads weights + model card + bundle
+python -m release.hf_upload   # dry-run mode first; uploads weights + model card + bundle
 ```
 
 ---
@@ -402,9 +403,9 @@ python -m H.hf_upload   # dry-run mode first; uploads weights + model card + bun
 | run the whole CPU test suite | `pytest -q` |
 | check a GPU node is fit for duty | `torchrun --standalone --nproc-per-node=8 -m pytest tests/gpu -m gpu -q` |
 | rehearse the full protocol offline (no chain, no R2) | `mok-miner --local-harness --uid 0 ...` |
-| join as a miner | `mok-onboard`, then `bash C/scripts/run_miner.sh` |
+| join as a miner | `mok-onboard`, then `bash subnet/scripts/run_miner.sh` |
 | see why a miner scored zero | validator logs + `docs/INTERNAL_API.md` (scoring/slashing sections) |
-| verify a released model's training history | `python -m H.verify_bundle <bundle>` then `H.replay_window` |
+| verify a released model's training history | `python -m release.verify_bundle <bundle>` then `release.replay_window` |
 
 **Where to look when something breaks:** `docs/ENGINEERING_NOTES.md` (100+
 known caveats, environment pins, GPU-milestone flags) → the module docstring

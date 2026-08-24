@@ -8,7 +8,7 @@ Description-Content-Type: text/markdown
 License-File: LICENSE
 License-File: NOTICE
 Requires-Dist: torch<3,>=2.10.0
-Requires-Dist: bittensor>=9.10.0
+Requires-Dist: bittensor<11,>=10.5
 Requires-Dist: aioboto3>=13.2.0
 Requires-Dist: aiofiles>=24.1.0
 Requires-Dist: pydantic>=2.8
@@ -57,14 +57,14 @@ each playbook step maps to one top-level directory:
 
 | Dir | Playbook step | What it contains |
 |---|---|---|
-| `A/` | Data preparation | tokenizer training, corpus download/dedup/tokenize/pack, content-addressed 512 MB shards, Merkle manifest, R2 upload. CPU-only — runnable anywhere. |
-| `B/` | Fleet bring-up | hardware attestation (timed deterministic MoK challenge), model seed-init publication, miner onboarding CLI, calibration sweeps, the blessed container. |
-| `C/` | Bulk pretraining | **the subnet application**: `core/` (window protocol engine — SparseLoCo compression, deterministic replicated outer step, scoring, replay audit), `miner/`, `validator/`, `auditor/` role apps. |
-| `D/` | Quality anneal | manifest phase layer over `C` (premium data + LR decay → 0 across 400B tokens). |
-| `E/` | Context extension | manifest phase layer over `C` (seq 16,384, RoPE θ=5e5). |
-| `F/` | SFT | TRL-based supervised fine-tuning; DCP → HF conversion + custom `MokMoe` modeling files. |
-| `G/` | DPO + RLVR | TRL DPO and GRPO with vLLM rollouts and execution-checked math/code rewards. |
-| `H/` | Eval + release | lm-eval harness, provenance bundle (manifest + per-window state roots + signed audit log + replay script), HF upload. |
+| `dataprep/` | Data preparation | tokenizer training, corpus download/dedup/tokenize/pack, content-addressed 512 MB shards, Merkle manifest, R2 upload. CPU-only — runnable anywhere. |
+| `fleet/` | Fleet bring-up | hardware attestation (timed deterministic MoK challenge), model seed-init publication, miner onboarding CLI, calibration sweeps, the blessed container. |
+| `subnet/` | Bulk pretraining | **the subnet application**: `core/` (window protocol engine — SparseLoCo compression, deterministic replicated outer step, scoring, replay audit), `miner/`, `validator/`, `auditor/` role apps. |
+| `anneal/` | Quality anneal | manifest phase layer over `subnet/` (premium data + LR decay → 0 across 400B tokens). |
+| `context/` | Context extension | manifest phase layer over `subnet/` (seq 16,384, RoPE θ=5e5). |
+| `sft/` | SFT | TRL-based supervised fine-tuning; DCP → HF conversion + custom `MokMoe` modeling files. |
+| `rl/` | DPO + RLVR | TRL DPO and GRPO with vLLM rollouts and execution-checked math/code rewards. |
+| `release/` | Eval + release | lm-eval harness, provenance bundle (manifest + per-window state roots + signed audit log + replay script), HF upload. |
 | `mok_core/` | — | shared library: config schemas + on-chain manifest, determinism primitives (state roots), MoK model stack, deterministic data pipeline, chain (bittensor SDK) and storage (R2) clients, telemetry. |
 
 ## Install
@@ -97,7 +97,7 @@ deterministic megakernel for the MoE layer, and a deterministic outer step
 applied by every node over the leader-certified peer set. The blake2b
 `state_root` of the master weights is committed on-chain each window; auditors
 replay sampled windows on identical hardware and slash on hash mismatch
-(2-of-3 quorum). See `C/core/replay.py`.
+(2-of-3 quorum). See `subnet/core/replay.py`.
 
 ## Provenance
 
@@ -177,15 +177,15 @@ machines, which is what makes audits meaningful:
    the fixed consensus seeds (`tests/gpu/_synthetic.py` is the reference
    driver: `torchrun --standalone --nproc-per-node=8 tests/gpu/_synthetic.py
    --data-dir <shards>` prints `STATE_ROOT=<hex>`), checkpoint θ_start via
-   `C.core.checkpoint.Checkpointer` before training, and record the window's
+   `subnet.core.checkpoint.Checkpointer` before training, and record the window's
    `WindowCommit` fields (θ_start `state_root`, `theta_end_hash`).
 2. **Ship to Node B:** the θ_start checkpoint directory, the run manifest, the
    RunConfig YAML, and the commit. (In production auditors get all of this
    from R2 + chain; here you copy it.)
-3. **Node B (auditor):** replay the window with the CLI over `C.core.replay`:
+3. **Node B (auditor):** replay the window with the CLI over `subnet.core.replay`:
 
    ```bash
-   python -m H.replay_window --manifest manifest.json --config C/configs/base.yaml \
+   python -m release.replay_window --manifest manifest.json --config subnet/configs/base.yaml \
        --window <W> --miner-uid <UID> --theta-start <ckpt-dir> --backend mok --out report.json
    ```
 

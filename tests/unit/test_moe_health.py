@@ -1,4 +1,4 @@
-"""Tests for C/core/moe_health.py — bias nudge direction, util formula, requant no-op."""
+"""Tests for subnet/core/moe_health.py — bias nudge direction, util formula, requant no-op."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import sys
 import pytest
 import torch
 
-from C.core.moe_health import MoeHealth
 from mok_core.config import ModelConfig, MoKRuntimeConfig, RunConfig
 from mok_core.model import init_model
+from subnet.core.moe_health import MoeHealth
 
 E = 16
 EP = 4

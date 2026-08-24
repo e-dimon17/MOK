@@ -1,6 +1,6 @@
 """Step-B attestation on real hardware: run_reference == derive_expected.
 
-The attestation challenge (B/attestation) is a block-hash-seeded deterministic
+The attestation challenge (fleet/attestation) is a block-hash-seeded deterministic
 toy MoK run with a deadline: only a real 8x SM103 NVLink node produces the
 right hash in time. This test executes the miner side (`run_reference`, mok
 backend on this node) and the verifier side (`derive_expected`) and demands
@@ -34,13 +34,13 @@ _DEADLINE_ATTRS = ("deadline_s", "deadline_seconds", "time_limit_s", "deadline")
 
 def _attestation_api() -> SimpleNamespace:
     try:
-        package = importlib.import_module("B.attestation")
+        package = importlib.import_module("fleet.attestation")
     except ImportError as exc:
-        pytest.skip(f"B.attestation not importable at run time: {exc!r}")
+        pytest.skip(f"fleet.attestation not importable at run time: {exc!r}")
     modules: list[Any] = [package]
     for sub in ("challenge", "reference_step", "verify"):
         try:
-            modules.append(importlib.import_module(f"B.attestation.{sub}"))
+            modules.append(importlib.import_module(f"fleet.attestation.{sub}"))
         except ImportError:
             continue
 
@@ -75,7 +75,7 @@ def _bind_known_kwargs(fn: Any, candidates: dict[str, Any]) -> dict[str, Any]:
         elif param.default is inspect.Parameter.empty:
             pytest.skip(
                 f"{getattr(fn, '__module__', '?')}.{fn.__name__} requires parameter {name!r} "
-                "this test cannot supply — align test_08 with the landed B API"
+                "this test cannot supply — align test_08 with the landed fleet API"
             )
     if accepts_var_kw:
         for key in ("device", "rank", "world_size"):
@@ -111,16 +111,16 @@ def _hash_of(result: Any) -> str:
         value = getattr(result, attr, None)
         if isinstance(value, str):
             return value
-    pytest.skip(f"cannot extract a hash from {type(result).__name__} — align test_08 with the landed B API")
+    pytest.skip(f"cannot extract a hash from {type(result).__name__} — align test_08 with the landed fleet API")
     raise AssertionError  # unreachable — pytest.skip raises
 
 
 def test_run_reference_matches_derive_expected(dist_ctx, mok_available) -> None:
     api = _attestation_api()
     if api.run_reference is None:
-        pytest.skip("B.attestation lacks run_reference — attestation round not landed yet")
+        pytest.skip("fleet.attestation lacks run_reference — attestation round not landed yet")
     if api.derive_expected is None:
-        pytest.skip("B.attestation lacks derive_expected — attestation round not landed yet")
+        pytest.skip("fleet.attestation lacks derive_expected — attestation round not landed yet")
 
     challenge = None
     if api.build_challenge is not None:

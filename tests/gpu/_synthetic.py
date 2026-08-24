@@ -30,24 +30,24 @@ import numpy as np
 import torch
 
 # When torchrun executes this file as a script, sys.path[0] is tests/gpu (not
-# the repo root), so the C/mok_core packages need an explicit path entry when
+# the repo root), so the subnet/mok_core packages need an explicit path entry when
 # the wheel is not pip-installed. A no-op under pytest and in the container.
 _REPO_ROOT_STR = str(Path(__file__).resolve().parents[2])
 if _REPO_ROOT_STR not in sys.path:
     sys.path.insert(0, _REPO_ROOT_STR)
 
-from C.core.inner_loop import InnerLoop  # noqa: E402
-from C.core.phase import PhaseConfig, resolve_phase  # noqa: E402
-from C.core.window_runner import TorchDistRunnerComm, build_window_plan, shared_master_root  # noqa: E402
 from mok_core.config import RunConfig  # noqa: E402
 from mok_core.config.loader import load_run_config  # noqa: E402
 from mok_core.config.manifest import DatasetManifestRef, PRFSpec, RunManifest  # noqa: E402
 from mok_core.data import DatasetShardIndex, ShardReader, shard_leaf_hash  # noqa: E402
 from mok_core.model import MoKTransformer, init_model  # noqa: E402
+from subnet.core.inner_loop import InnerLoop  # noqa: E402
+from subnet.core.phase import PhaseConfig, resolve_phase  # noqa: E402
+from subnet.core.window_runner import TorchDistRunnerComm, build_window_plan, shared_master_root  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TOY_BASE_YAML = REPO_ROOT / "C" / "configs" / "base.yaml"
-TOY_OVERLAY_YAML = REPO_ROOT / "C" / "configs" / "toy4L.yaml"
+TOY_BASE_YAML = REPO_ROOT / "subnet" / "configs" / "base.yaml"
+TOY_OVERLAY_YAML = REPO_ROOT / "subnet" / "configs" / "toy4L.yaml"
 
 # Consensus-style constants for the whole GPU suite (one window, one uid).
 RUN_SEED = bytes(range(32))
@@ -146,7 +146,7 @@ def load_toy_run_config(
     routed_precision: str | None = None,
     adam_reset_every_windows: int | None = None,
 ) -> RunConfig:
-    """C/configs/base.yaml + toy4L.yaml through the real loader, with test knobs."""
+    """subnet/configs/base.yaml + toy4L.yaml through the real loader, with test knobs."""
     cfg = load_run_config(TOY_BASE_YAML, TOY_OVERLAY_YAML)
     if inner_steps is not None:
         cfg = cfg.model_copy(update={"window": cfg.window.model_copy(update={"inner_steps": inner_steps})})

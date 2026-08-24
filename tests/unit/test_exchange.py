@@ -1,4 +1,4 @@
-"""Tests for C/core/exchange.py — two-phase commit, certified gather, bucket objects.
+"""Tests for subnet/core/exchange.py — two-phase commit, certified gather, bucket objects.
 
 Storage runs against a local ThreadedMotoServer (pattern from
 test_storage_client.py); the chain side is a MagicMock so two-phase ordering
@@ -17,9 +17,14 @@ import pytest
 import torch
 import zstandard
 
-from C.core.certificate import WindowCertificate
-from C.core.compress import ChunkingTransformer, Quantizer, TopKCompressor
-from C.core.exchange import (
+from mok_core.chain import ChainError, WindowCommit
+from mok_core.config.canonical import canonical_bytes
+from mok_core.config.schemas import BucketCreds, StorageConfig
+from mok_core.determinism.hashing import hash_bytes
+from mok_core.storage import KeyFormatError, StorageClient, keys
+from subnet.core.certificate import WindowCertificate
+from subnet.core.compress import ChunkingTransformer, Quantizer, TopKCompressor
+from subnet.core.exchange import (
     AGGREGATOR_MAGIC,
     AGGREGATOR_WIRE_VERSION,
     AggregatorObject,
@@ -41,12 +46,7 @@ from C.core.exchange import (
     put_telemetry,
     put_window_payload,
 )
-from C.core.payload import PayloadMeta, WindowPayload, canonical_payload_hash, serialize
-from mok_core.chain import ChainError, WindowCommit
-from mok_core.config.canonical import canonical_bytes
-from mok_core.config.schemas import BucketCreds, StorageConfig
-from mok_core.determinism.hashing import hash_bytes
-from mok_core.storage import KeyFormatError, StorageClient, keys
+from subnet.core.payload import PayloadMeta, WindowPayload, canonical_payload_hash, serialize
 
 TARGET_CHUNK = 4
 TOPK = 3

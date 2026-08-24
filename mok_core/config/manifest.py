@@ -4,7 +4,7 @@ its behavior from.
 A window is a pure function of (θ_start, uid, window, manifest). Everything
 time-varying — LR segment, data tree, sequence length, capacity multiplier,
 grad-accum ramp — is resolved through the manifest's PHASE TABLE, and changes
-arrive as signed AMENDMENTS effective >= 2 windows in the future. Steps D and E
+arrive as signed AMENDMENTS effective >= 2 windows in the future. The anneal and context stages
 are nothing but phase entries. Rollbacks append VOID RANGES (windows whose
 gradients left the lineage) plus a reseed salt for the reassigned data.
 """
@@ -20,7 +20,7 @@ from .schemas import FrozenModel, LRSpec, RunConfig
 
 
 class DatasetManifestRef(FrozenModel):
-    """Pointer to the frozen dataset tree produced by step A."""
+    """Pointer to the frozen dataset tree produced by dataprep."""
 
     name: str                            # e.g. "bulk", "anneal", "longdoc"
     merkle_root: str                     # hex blake2b-256 over sorted shard hashes
@@ -142,7 +142,7 @@ class RunManifest(FrozenModel):
         raise KeyError(f"dataset {name!r} not in manifest")
 
     def phase_at(self, window: int) -> PhaseEntry:
-        """The phase entry active at `window` (C/core/phase.py builds the full
+        """The phase entry active at `window` (subnet/core/phase.py builds the full
         PhaseConfig by merging these overrides into the RunConfig)."""
         active = self.phase_table[0]
         for entry in self.phase_table:

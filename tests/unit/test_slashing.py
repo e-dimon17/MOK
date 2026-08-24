@@ -1,4 +1,4 @@
-"""C/core/slashing.py — every ladder transition, 2-of-3 quorum, naughty expiry."""
+"""subnet/core/slashing.py — every ladder transition, 2-of-3 quorum, naughty expiry."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from C.core.slashing import SlashLedger
 from mok_core.config.schemas import AuditConfig
+from subnet.core.slashing import SlashLedger
 
 
 @dataclass(frozen=True)

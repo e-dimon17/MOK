@@ -94,7 +94,7 @@ def test_workspace_creation_and_cache_for_toy_shapes(dist_ctx, mok_available, to
     again = functional.get_workspace(mok_cfg, dist.group.WORLD, **kwargs)
     assert again is workspace
     # A different shape key creates (and caches) a distinct workspace — the
-    # per-shape caching contract step E's 16k restart relies on.
+    # per-shape caching contract the 16k context restart relies on.
     other = functional.get_workspace(
         mok_cfg,
         dist.group.WORLD,

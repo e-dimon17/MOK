@@ -1,5 +1,5 @@
 torch<3,>=2.10.0
-bittensor>=9.10.0
+bittensor<11,>=10.5
 aioboto3>=13.2.0
 aiofiles>=24.1.0
 pydantic>=2.8

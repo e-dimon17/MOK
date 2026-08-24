@@ -1,4 +1,4 @@
-"""Tests for C/miner — the miner application over the full loopback rig.
+"""Tests for subnet/miner — the miner application over the full loopback rig.
 
 Reuses the shard/model/manifest builders from tests/unit/test_window_runner.py
 (imported, not re-run) and drives `MinerApp.run()` end to end on CPU: moto S3
@@ -26,25 +26,6 @@ import pytest
 import test_window_runner as twr
 import torch
 
-from C.core.checkpoint import build_outer_inputs
-from C.core.compress import ErrorFeedback
-from C.core.window_runner import (
-    DENSE_SUFFIX,
-    RunState,
-    SingleNodeComm,
-    build_window_plan,
-    run_training_phase,
-)
-from C.miner.app import RESTART_EXIT_CODE, MinerApp
-from C.miner.bootstrap import (
-    INIT_SEED,
-    LocalSigner,
-    LoopbackClock,
-    MemoryStorage,
-    NodeContext,
-    ScriptedChain,
-    bootstrap,
-)
 from mok_core.chain.schemas import WindowCommit
 from mok_core.config import (
     InnerOptConfig,
@@ -60,6 +41,25 @@ from mok_core.data import DatasetShardIndex, ShardCache
 from mok_core.determinism import hash_bytes, hash_named_tensors
 from mok_core.model import MoKTransformer, build_reference_model
 from mok_core.storage import ObjectMissingError, StorageClient, keys
+from subnet.core.checkpoint import build_outer_inputs
+from subnet.core.compress import ErrorFeedback
+from subnet.core.window_runner import (
+    DENSE_SUFFIX,
+    RunState,
+    SingleNodeComm,
+    build_window_plan,
+    run_training_phase,
+)
+from subnet.miner.app import RESTART_EXIT_CODE, MinerApp
+from subnet.miner.bootstrap import (
+    INIT_SEED,
+    LocalSigner,
+    LoopbackClock,
+    MemoryStorage,
+    NodeContext,
+    ScriptedChain,
+    bootstrap,
+)
 
 UID = twr.UID  # 3
 RUN_SEED = twr.RUN_SEED
@@ -198,7 +198,7 @@ def run_peer_window(
 
 
 def _phase(manifest: RunManifest, cfg: RunConfig, window: int) -> Any:
-    from C.core.phase import resolve_phase
+    from subnet.core.phase import resolve_phase
 
     return resolve_phase(manifest, cfg, window)
 
@@ -409,7 +409,7 @@ def test_mini_session_checkpoint_cadence(mini_session: dict[str, Any]) -> None:
 
 
 def test_mini_session_publications(mini_session: dict[str, Any]) -> None:
-    from C.core.exchange import debug_key
+    from subnet.core.exchange import debug_key
 
     assert debug_key(0, UID) in mini_session["debug_keys"]
     assert debug_key(1, UID) in mini_session["debug_keys"]
@@ -556,9 +556,9 @@ def test_desync_then_catch_up_recovery(
     moto_endpoint: str,
     tmp_path: Path,
 ) -> None:
-    from C.core.certificate import build_certificate
-    from C.core.exchange import put_aggregator_object, put_certificate
-    from C.core.window_runner import _SelfCommit
+    from subnet.core.certificate import build_certificate
+    from subnet.core.exchange import put_aggregator_object, put_certificate
+    from subnet.core.window_runner import _SelfCommit
 
     cfg = make_app_cfg()
     peer_uid = 9
@@ -664,8 +664,8 @@ def test_bootstrap_local_harness(tmp_path: Path, monkeypatch) -> None:
     from mok_core.config import config_hash
     from mok_core.determinism import enforce_determinism
 
-    # C.miner re-exports the bootstrap *function*, shadowing the submodule.
-    bootstrap_mod = importlib.import_module("C.miner.bootstrap")
+    # subnet.miner re-exports the bootstrap *function*, shadowing the submodule.
+    bootstrap_mod = importlib.import_module("subnet.miner.bootstrap")
 
     # In-process: earlier tests' DCP saves already created a CUDA context on
     # GPU hosts; keep real enforcement but skip the process-entry order check.
@@ -720,7 +720,7 @@ def test_bootstrap_local_harness(tmp_path: Path, monkeypatch) -> None:
 def test_apps_import_clean_without_heavy_deps() -> None:
     code = (
         "import sys\n"
-        "import C.miner, C.miner.main, C.validator, C.validator.main, C.auditor, C.auditor.main\n"
+        "import subnet.miner, subnet.miner.main, subnet.validator, subnet.validator.main, subnet.auditor, subnet.auditor.main\n"
         "for mod in ('bittensor', 'wandb', 'vllm', 'transformers', 'aioboto3', 'boto3'):\n"
         "    assert mod not in sys.modules, mod\n"
         "print('clean')\n"
@@ -750,7 +750,7 @@ def _creds(tag: str) -> dict[str, str]:
 
 
 def test_dataset_shard_key_matches_upload_layout() -> None:
-    from C.miner.bootstrap import dataset_shard_key
+    from subnet.miner.bootstrap import dataset_shard_key
 
     leaf = "ab" * 32
     # The layout `mok-data upload` publishes: datasets/<name>/shard-<hash16>.bin
@@ -762,7 +762,7 @@ def test_dataset_shard_key_matches_upload_layout() -> None:
 def test_load_static_buckets(tmp_path: Path) -> None:
     import json as _json
 
-    from C.miner.bootstrap import BootstrapError, load_static_buckets
+    from subnet.miner.bootstrap import BootstrapError, load_static_buckets
 
     assert load_static_buckets(env={}) == {}
     good = tmp_path / "buckets.json"
@@ -807,7 +807,7 @@ def test_static_map_dataset_bucket_routes_shard_reads(tmp_path: Path) -> None:
     import json as _json
     from unittest.mock import MagicMock
 
-    from C.miner.bootstrap import DATASET_BUCKET_UID, load_static_buckets
+    from subnet.miner.bootstrap import DATASET_BUCKET_UID, load_static_buckets
 
     path = tmp_path / "buckets.json"
     path.write_text(
@@ -842,8 +842,8 @@ def test_static_map_dataset_bucket_routes_shard_reads(tmp_path: Path) -> None:
 def test_recover_waits_out_a_pending_certificate(monkeypatch, tmp_path: Path) -> None:
     """A down/lagging leader must stall the miner, not crash it: pending-certificate
     retries are unbounded (they do not consume the failure budget)."""
-    import C.miner.app as app_mod
-    from C.core.checkpoint import CertificatePendingError
+    import subnet.miner.app as app_mod
+    from subnet.core.checkpoint import CertificatePendingError
 
     calls = {"n": 0}
 
@@ -884,7 +884,7 @@ def test_chain_head_window_tolerates_rpc_failures() -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from C.miner.bootstrap import chain_head_window
+    from subnet.miner.bootstrap import chain_head_window
 
     ok = SimpleNamespace(chain=SimpleNamespace(current_window=lambda manifest: 42), manifest=None)
     assert asyncio.run(chain_head_window(ok)) == 42

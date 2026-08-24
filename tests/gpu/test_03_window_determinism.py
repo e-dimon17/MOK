@@ -22,8 +22,8 @@ import _synthetic as synth
 import pytest
 import torch
 
-from C.core.phase import resolve_phase
-from C.core.window_runner import RunState, run_training_phase
+from subnet.core.phase import resolve_phase
+from subnet.core.window_runner import RunState, run_training_phase
 
 pytestmark = pytest.mark.usefixtures("mok_available")
 
@@ -92,7 +92,7 @@ def test_run_training_phase_twice_theta_end_roots_equal(
     def one_run() -> tuple[str, str]:
         dist_ctx.barrier()
         model = synth.build_mok_model(cfg, dist_ctx.device)
-        from C.core.window_runner import build_window_plan
+        from subnet.core.window_runner import build_window_plan
 
         plan = build_window_plan(
             toy_dataset.manifest,

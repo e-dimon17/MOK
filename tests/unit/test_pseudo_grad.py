@@ -1,4 +1,4 @@
-"""Tests for C/core/pseudo_grad.py — snapshot/restore round-trip exactness."""
+"""Tests for subnet/core/pseudo_grad.py — snapshot/restore round-trip exactness."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import pytest
 import torch
 from torch import nn
 
-from C.core.pseudo_grad import CpuSnapshot, restore_and_extract_delta
 from mok_core.config import ModelConfig
 from mok_core.determinism import hash_named_tensors
 from mok_core.model import build_reference_model
+from subnet.core.pseudo_grad import CpuSnapshot, restore_and_extract_delta
 
 
 @pytest.fixture(scope="module", autouse=True)

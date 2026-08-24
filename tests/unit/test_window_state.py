@@ -1,17 +1,17 @@
-"""Tests for C/core/window_state.py — delegation to mok_core hashing + rank-parallel root."""
+"""Tests for subnet/core/window_state.py — delegation to mok_core hashing + rank-parallel root."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from C.core.window_state import (
+from mok_core.determinism import hash_named_tensors, per_tensor_digests
+from subnet.core.window_state import (
     collect_digests,
     divergence_report,
     rank_parallel_state_root,
     state_root,
 )
-from mok_core.determinism import hash_named_tensors, per_tensor_digests
 
 
 def _named() -> list[tuple[str, torch.Tensor]]:

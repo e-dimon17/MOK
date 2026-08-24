@@ -1,4 +1,4 @@
-"""Tests for C/core/zero1.py — ZeRO-1 AdamW: torch parity, bucketing, reductions."""
+"""Tests for subnet/core/zero1.py — ZeRO-1 AdamW: torch parity, bucketing, reductions."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import pytest
 import torch
 from torch import nn
 
-from C.core.zero1 import SingleProcessComm, Zero1Adam, flat_grad_all_reduce
 from mok_core.config import InnerOptConfig
+from subnet.core.zero1 import SingleProcessComm, Zero1Adam, flat_grad_all_reduce
 
 
 @pytest.fixture(scope="module", autouse=True)
